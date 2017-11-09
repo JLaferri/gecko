@@ -20,16 +20,16 @@ type Config struct {
 type CodeDescription struct {
   Name        string
   Authors     []string
-  Description string
+  Description []string
   Build       []GeckoCode
 }
 
 type GeckoCode struct {
-  Type        string
-  Address     string
-  Description string
-  SourceFile  string
-  Value       string
+  Type       string
+  Address    string
+  Annotation string
+  SourceFile string
+  Value      string
 }
 
 const (
@@ -40,9 +40,19 @@ const (
 var output []string
 
 func main() {
+  if (len(os.Args) < 2) {
+    log.Fatal("Must provide a command. Try typing 'gecko build'.")
+  }
+
+  if (os.Args[1] != "build") {
+    log.Fatal("Currently only the build command is supported. Try typing 'gecko build'.")
+  }
+
   config := readConfigFile()
   buildBody(config)
   writeOutput(config.OutputFile)
+
+  fmt.Printf("Successfuly wrote codes to %s.\n", config.OutputFile)
 }
 
 func readConfigFile() Config {
@@ -64,8 +74,7 @@ func readConfigFile() Config {
 }
 
 func buildBody(config Config) {
-
-  //
+  // go through every code and print a header and the codes that make it up
   for _, code := range config.Codes {
     headerLines := generateHeaderLines(code)
     output = append(output, headerLines...)
@@ -78,11 +87,16 @@ func buildBody(config Config) {
 }
 
 func generateHeaderLines(desc CodeDescription) []string {
+  result := []string{}
+
   authorString := strings.Join(desc.Authors, ", ")
-  return []string{
-    fmt.Sprintf("$%s [%s]", desc.Name, authorString),
-    fmt.Sprintf("*%s", desc.Description),
+  result = append(result, fmt.Sprintf("$%s [%s]", desc.Name, authorString))
+
+  for _, line := range desc.Description {
+    result = append(result, fmt.Sprintf("*%s", line))
   }
+
+  return result
 }
 
 func generateCodeLines(desc CodeDescription) []string {
@@ -92,9 +106,11 @@ func generateCodeLines(desc CodeDescription) []string {
     switch (geckoCode.Type) {
     case Replace:
       line := generateReplaceCodeLine(geckoCode.Address, geckoCode.Value)
+      line = addLineAnnotation(line, geckoCode.Annotation)
       result = append(result, line)
     case Inject:
       lines := generateInjectionCodeLines(geckoCode.Address, geckoCode.SourceFile)
+      lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
       result = append(result, lines...)
     }
   }
@@ -105,6 +121,14 @@ func generateCodeLines(desc CodeDescription) []string {
 func generateReplaceCodeLine(address, value string) string {
   // TODO: Add error if address or value is incorrect length/format
   return fmt.Sprintf("04%s %s", address[2:], strings.ToUpper(value))
+}
+
+func addLineAnnotation(line, annotation string) string {
+  if (annotation == "") {
+    return line
+  }
+
+  return fmt.Sprintf("%s #%s", line, annotation)
 }
 
 func generateInjectionCodeLines(address, file string) []string {
@@ -131,7 +155,6 @@ func generateInjectionCodeLines(address, file string) []string {
   return lines
 }
 
-
 func compile(file string) []byte {
   defer os.Remove("a.out")
 
@@ -151,9 +174,5 @@ func compile(file string) []byte {
 
 func writeOutput(outputFile string) {
   fullText := strings.Join(output, "\n")
-
-  // Take output and convert it to byte array
-  fmt.Printf("%v", fullText)
-
   ioutil.WriteFile(outputFile, []byte(fullText), 0644)
 }
