@@ -19,7 +19,7 @@ Drawing inspiration from package managers such as npm, I thought it would be a g
 ### build command
 All you have to do to use the build command is write a `codes.json` file and put it in a directory which contains all of your files containing your assembly code, cd to that file from the command line, and type `gecko build`. This will create a text file with all of your compiled composite codes where you specified.
 #### codes.json
-I feel like it's easiest to lead by example. The `codes.json` file is relatively self explanatory. I'll show a very simple version here and then link to a more complex solution in my proeject to show off all the possibilities.
+I feel like it's easiest to lead by example. The `codes.json` file is relatively self explanatory. I'll show a very simple version here and then link to a more complex solution in my project to show off all the possibilities.
 
 ```
 {
@@ -58,6 +58,6 @@ For a more complex example view the [codes.json file](https://github.com/JLaferr
 #### Relative paths
 I haven't tested this but it should be possible to define relative paths for `sourceFile` and `outputFile` if you have a nested directory structure.
 #### File watchers
-If you use a code editer that supports file watchers, you could consider hooking up the command to run automatically whenever you saved one of your assembly code files. This strategy would save you the trouble of having to `gecko build` manually.
+If you use a code editer that supports file watchers, you could consider hooking up the command to run automatically whenever you save one of your assembly code files. This strategy would save you the trouble of having to `gecko build` manually.
 ## Other Commands
 If anyone has any ideas as to some other commands that might be useful I'm more than open to contributions. Please just fork my project and submit a pull request. I called this project Gecko Tool(s) for a reason. Hopefully there are more useful things that can be done with it.
