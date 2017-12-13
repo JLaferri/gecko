@@ -120,7 +120,7 @@ func generateCodeLines(desc CodeDescription) []string {
 
 func generateReplaceCodeLine(address, value string) string {
   // TODO: Add error if address or value is incorrect length/format
-  return fmt.Sprintf("04%s %s", address[2:], strings.ToUpper(value))
+  return fmt.Sprintf("04%s %s", strings.ToUpper(address[2:]), strings.ToUpper(value))
 }
 
 func addLineAnnotation(line, annotation string) string {
@@ -144,7 +144,7 @@ func generateInjectionCodeLines(address, file string) []string {
     instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
   }
 
-  lines = append(lines, fmt.Sprintf("C2%s %08X", address[2:], len(instructions) / 8))
+  lines = append(lines, fmt.Sprintf("C2%s %08X", strings.ToUpper(address[2:]), len(instructions) / 8))
 
   for i := 0; i < len(instructions); i += 8 {
     left := strings.ToUpper(hex.EncodeToString(instructions[i:i + 4]))
