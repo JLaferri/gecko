@@ -186,8 +186,11 @@ func compile(file string) []byte {
   defer os.Remove("a.out")
 
   cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", file)
-  if err := cmd.Run(); err != nil {
-    log.Fatal(fmt.Sprintf("Failed to compile file %s\n", file), err)
+  output, err := cmd.CombinedOutput()
+  if (err != nil) {
+    fmt.Printf("Failed to compile file: %s\n", file)
+    fmt.Printf("%s", output)
+    os.Exit(1)
   }
 
   contents, err := ioutil.ReadFile("a.out")
