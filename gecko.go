@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -25,17 +26,20 @@ type CodeDescription struct {
 }
 
 type GeckoCode struct {
-	Type       string
-	Address    string
-	Annotation string
-	SourceFile string
-	Value      string
+	Type          string
+	Address       string
+	TargetAddress string
+	Annotation    string
+	SourceFile    string
+	Value         string
 }
 
 const (
 	Replace          = "replace"
 	Inject           = "inject"
 	ReplaceCodeBlock = "replaceCodeBlock"
+	Branch           = "branch"
+	BranchAndLink    = "branchAndLink"
 )
 
 var output []string
@@ -117,6 +121,13 @@ func generateCodeLines(desc CodeDescription) []string {
 			lines := generateReplaceCodeBlockLines(geckoCode.Address, geckoCode.SourceFile)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
+		case Branch:
+			fallthrough
+		case BranchAndLink:
+			shouldLink := geckoCode.Type == BranchAndLink
+			line := generateBranchCodeLine(geckoCode.Address, geckoCode.TargetAddress, shouldLink)
+			line = addLineAnnotation(line, geckoCode.Annotation)
+			result = append(result, line)
 		}
 	}
 
@@ -126,6 +137,34 @@ func generateCodeLines(desc CodeDescription) []string {
 func generateReplaceCodeLine(address, value string) string {
 	// TODO: Add error if address or value is incorrect length/format
 	return fmt.Sprintf("04%s %s", strings.ToUpper(address[2:]), strings.ToUpper(value))
+}
+
+func generateBranchCodeLine(address, targetAddress string, shouldLink bool) string {
+	// TODO: Add error if address or value is incorrect length/format
+
+	addressUint, err := strconv.ParseUint(address[2:], 16, 32)
+	targetAddressUint, err := strconv.ParseUint(targetAddress[2:], 16, 32)
+	if err != nil {
+		log.Fatal("Failed to parse address or target address.", err)
+	}
+
+	addressDiff := targetAddressUint - addressUint
+	prefix := "48"
+	if addressDiff < 0 {
+		prefix = "4B"
+	}
+
+	if shouldLink {
+		addressDiff += 1
+	}
+
+	// TODO: Add error if diff is going to be more than 6 characters long
+
+	// Convert diff to hex string, and then for negative values, we
+	addressDiffStr := fmt.Sprintf("%06X", addressDiff)
+	addressDiffStr = addressDiffStr[len(addressDiffStr)-6:]
+
+	return fmt.Sprintf("04%s %s%s", strings.ToUpper(address[2:]), prefix, addressDiffStr)
 }
 
 func addLineAnnotation(line, annotation string) string {
