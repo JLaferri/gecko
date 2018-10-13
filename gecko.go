@@ -198,7 +198,10 @@ func generateInjectionFolderLines(folder string) []string {
 			continue
 		}
 
-		file, err := os.Open(fileName)
+		// Get full filepath for file
+		filePath := filepath.Join(folder, fileName)
+
+		file, err := os.Open(filePath)
 		if err != nil {
 			log.Fatal("Failed to read file.", err)
 		}
@@ -214,7 +217,7 @@ func generateInjectionFolderLines(folder string) []string {
 		address := firstLine[lineLength-8:]
 
 		// Compile file and add lines
-		fileLines := generateInjectionCodeLines(address, fileName)
+		fileLines := generateInjectionCodeLines(address, filePath)
 		lines = append(lines, fileLines...)
 	}
 
