@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -31,6 +33,7 @@ type GeckoCode struct {
 	TargetAddress string
 	Annotation    string
 	SourceFile    string
+	SourceFolder  string
 	Value         string
 }
 
@@ -40,6 +43,7 @@ const (
 	ReplaceCodeBlock = "replaceCodeBlock"
 	Branch           = "branch"
 	BranchAndLink    = "branchAndLink"
+	InjectFolder     = "injectFolder"
 )
 
 var output []string
@@ -128,6 +132,10 @@ func generateCodeLines(desc CodeDescription) []string {
 			line := generateBranchCodeLine(geckoCode.Address, geckoCode.TargetAddress, shouldLink)
 			line = addLineAnnotation(line, geckoCode.Annotation)
 			result = append(result, line)
+		case InjectFolder:
+			lines := generateInjectionFolderLines(geckoCode.SourceFolder)
+			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+			result = append(result, lines...)
 		}
 	}
 
@@ -173,6 +181,44 @@ func addLineAnnotation(line, annotation string) string {
 	}
 
 	return fmt.Sprintf("%s #%s", line, annotation)
+}
+
+func generateInjectionFolderLines(folder string) []string {
+	lines := []string{}
+
+	files, err := ioutil.ReadDir(folder)
+	if err != nil {
+		log.Fatal("Failed to read directory.", err)
+	}
+
+	for _, file := range files {
+		fileName := file.Name()
+		ext := filepath.Ext(fileName)
+		if ext != ".asm" {
+			continue
+		}
+
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatal("Failed to read file.", err)
+		}
+		defer file.Close()
+
+		// Read first line from file to get address
+		scanner := bufio.NewScanner(file)
+		scanner.Scan()
+		firstLine := scanner.Text()
+
+		// Get address
+		lineLength := len(firstLine)
+		address := firstLine[lineLength-8:]
+
+		// Compile file and add lines
+		fileLines := generateInjectionCodeLines(address, fileName)
+		lines = append(lines, fileLines...)
+	}
+
+	return lines
 }
 
 func generateInjectionCodeLines(address, file string) []string {
