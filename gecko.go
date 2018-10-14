@@ -32,6 +32,7 @@ type GeckoCode struct {
 	Address       string
 	TargetAddress string
 	Annotation    string
+	IsRecursive   bool
 	SourceFile    string
 	SourceFolder  string
 	Value         string
@@ -133,8 +134,7 @@ func generateCodeLines(desc CodeDescription) []string {
 			line = addLineAnnotation(line, geckoCode.Annotation)
 			result = append(result, line)
 		case InjectFolder:
-			lines := generateInjectionFolderLines(geckoCode.SourceFolder)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+			lines := generateInjectionFolderLines(geckoCode.SourceFolder, geckoCode.IsRecursive)
 			result = append(result, lines...)
 		}
 	}
@@ -183,15 +183,15 @@ func addLineAnnotation(line, annotation string) string {
 	return fmt.Sprintf("%s #%s", line, annotation)
 }
 
-func generateInjectionFolderLines(folder string) []string {
+func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 	lines := []string{}
 
-	files, err := ioutil.ReadDir(folder)
+	contents, err := ioutil.ReadDir(folder)
 	if err != nil {
 		log.Fatal("Failed to read directory.", err)
 	}
 
-	for _, file := range files {
+	for _, file := range contents {
 		fileName := file.Name()
 		ext := filepath.Ext(fileName)
 		if ext != ".asm" {
@@ -218,7 +218,22 @@ func generateInjectionFolderLines(folder string) []string {
 
 		// Compile file and add lines
 		fileLines := generateInjectionCodeLines(address, filePath)
+		fileLines[0] = addLineAnnotation(fileLines[0], filePath)
 		lines = append(lines, fileLines...)
+	}
+
+	if isRecursive {
+		// If we are recursively searching folders, process sub-directories
+		for _, file := range contents {
+			if !file.IsDir() {
+				continue
+			}
+
+			folderName := file.Name()
+			folderPath := filepath.Join(folder, folderName)
+			folderLines := generateInjectionFolderLines(folderPath, isRecursive)
+			lines = append(lines, folderLines...)
+		}
 	}
 
 	return lines
