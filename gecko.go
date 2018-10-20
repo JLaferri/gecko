@@ -203,7 +203,7 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 
 		file, err := os.Open(filePath)
 		if err != nil {
-			log.Fatal("Failed to read file.", err)
+			log.Fatalf("Failed to read file at %s\r\n%s\r\n", filePath, err.Error())
 		}
 		defer file.Close()
 
@@ -212,9 +212,32 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 		scanner.Scan()
 		firstLine := scanner.Text()
 
+		// Prepare injection address error
+		indicateAddressError := func(errStr ...string) {
+			errMsg := fmt.Sprintf(
+				"File at %s needs to specify the 4 byte injection address "+
+					"at the end of the first line of the file\r\n",
+				filePath,
+			)
+
+			if len(errStr) > 0 {
+				errMsg += errStr[0] + "\r\n"
+			}
+
+			log.Fatal(errMsg)
+		}
+
 		// Get address
 		lineLength := len(firstLine)
+		if lineLength < 8 {
+			indicateAddressError()
+		}
 		address := firstLine[lineLength-8:]
+
+		_, err = hex.DecodeString(address)
+		if err != nil {
+			indicateAddressError(err.Error())
+		}
 
 		// Compile file and add lines
 		fileLines := generateInjectionCodeLines(address, filePath)
