@@ -51,14 +51,18 @@ var output []string
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("Must provide a command. Try typing 'gecko build'.")
+		log.Fatal("Must provide a command. Try typing 'gecko build'\n")
 	}
 
 	if os.Args[1] != "build" {
-		log.Fatal("Currently only the build command is supported. Try typing 'gecko build'.")
+		log.Fatal("Currently only the build command is supported. Try typing 'gecko build'\n")
 	}
 
 	config := readConfigFile()
+	if len(config.OutputFiles) < 1 {
+		log.Fatal("Must have at least one output file configured in the outputFiles field\n")
+	}
+
 	buildBody(config)
 
 	for _, file := range config.OutputFiles {
