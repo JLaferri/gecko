@@ -16,8 +16,8 @@ import (
 )
 
 type Config struct {
-	OutputFile string
-	Codes      []CodeDescription
+	OutputFiles []string
+	Codes       []CodeDescription
 }
 
 type CodeDescription struct {
@@ -60,9 +60,10 @@ func main() {
 
 	config := readConfigFile()
 	buildBody(config)
-	writeOutput(config.OutputFile)
 
-	fmt.Printf("Successfuly wrote codes to %s.\n", config.OutputFile)
+	for _, file := range config.OutputFiles {
+		writeOutput(file)
+	}
 }
 
 func readConfigFile() Config {
@@ -203,7 +204,7 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 
 		file, err := os.Open(filePath)
 		if err != nil {
-			log.Fatalf("Failed to read file at %s\r\n%s\r\n", filePath, err.Error())
+			log.Fatalf("Failed to read file at %s\n%s\n", filePath, err.Error())
 		}
 		defer file.Close()
 
@@ -216,12 +217,12 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 		indicateAddressError := func(errStr ...string) {
 			errMsg := fmt.Sprintf(
 				"File at %s needs to specify the 4 byte injection address "+
-					"at the end of the first line of the file\r\n",
+					"at the end of the first line of the file\n",
 				filePath,
 			)
 
 			if len(errStr) > 0 {
-				errMsg += errStr[0] + "\r\n"
+				errMsg += errStr[0] + "\n"
 			}
 
 			log.Fatal(errMsg)
@@ -339,6 +340,41 @@ func compile(file string) []byte {
 }
 
 func writeOutput(outputFile string) {
+	fmt.Printf("Writing to %s...\n", outputFile)
+	ext := filepath.Ext(outputFile)
+	switch ext {
+	case ".gct":
+		writeGctOutput(outputFile)
+	default:
+		writeTextOutput(outputFile)
+	}
+
+	fmt.Printf("Successfuly wrote codes to %s\n", outputFile)
+}
+
+func writeTextOutput(outputFile string) {
 	fullText := strings.Join(output, "\n")
 	ioutil.WriteFile(outputFile, []byte(fullText), 0644)
+}
+
+func writeGctOutput(outputFile string) {
+	gctBytes := []byte{0x00, 0xD0, 0xC0, 0xDE, 0x00, 0xD0, 0xC0, 0xDE}
+
+	for _, line := range output {
+		if len(line) < 17 {
+			// lines with less than 17 characters cannot be code lines
+			continue
+		}
+
+		lineBytes, err := hex.DecodeString(line[0:8] + line[9:17])
+		if err != nil {
+			// If parse fails that likely means this is a header or something
+			continue
+		}
+
+		gctBytes = append(gctBytes, lineBytes...)
+	}
+
+	gctBytes = append(gctBytes, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+	ioutil.WriteFile(outputFile, gctBytes, 0644)
 }
