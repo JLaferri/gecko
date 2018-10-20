@@ -244,9 +244,19 @@ func generateInjectionCodeLines(address, file string) []string {
 	lines := []string{}
 
 	instructions := compile(file)
+	instructionLen := len(instructions)
+
+	if instructionLen == 4 {
+		// If instructionLen is 4, this can be a 04 code instead of C2
+		instructionStr := hex.EncodeToString(instructions[0:4])
+		replaceLine := generateReplaceCodeLine(address, instructionStr)
+		lines = append(lines, replaceLine)
+
+		return lines
+	}
 
 	// Fixes code to always end with 0x00000000 and have an even number of words
-	if len(instructions)%8 == 0 {
+	if instructionLen%8 == 0 {
 		instructions = append(instructions, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
 	} else {
 		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
