@@ -274,6 +274,10 @@ func generateInjectionCodeLines(address, file string) []string {
 	instructions := compile(file)
 	instructionLen := len(instructions)
 
+	if instructionLen == 0 {
+		log.Fatalf("Did not find any code in file: %s\n", file)
+	}
+
 	if instructionLen == 4 {
 		// If instructionLen is 4, this can be a 04 code instead of C2
 		instructionStr := hex.EncodeToString(instructions[0:4])
@@ -326,7 +330,24 @@ func generateReplaceCodeBlockLines(address, file string) []string {
 func compile(file string) []byte {
 	defer os.Remove("a.out")
 
-	cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", file)
+	// First we are gonna load all the data from file and write it into temp file
+	// Technically this shouldn't be necessary but for some reason if the last line
+	// or the asm file has one of more spaces at the end and no new line, the last
+	// instruction is ignored and not compiled
+	asmContents, err := ioutil.ReadFile(file)
+	if err != nil {
+		log.Fatalf("Failed to read asm file: %s\n%s\n", file, err.Error())
+	}
+
+	// Explicitly add a new line at the end of the file, which should prevent line skip
+	asmContents = append(asmContents, []byte("\r\n")...)
+	err = ioutil.WriteFile("asm-to-compile.asm", asmContents, 0644)
+	if err != nil {
+		log.Fatalf("Failed to write temporary asm file\n%s\n", err.Error())
+	}
+	defer os.Remove("asm-to-compile.asm")
+
+	cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "asm-to-compile.asm")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("Failed to compile file: %s\n", file)
@@ -336,7 +357,7 @@ func compile(file string) []byte {
 
 	contents, err := ioutil.ReadFile("a.out")
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to read compiled file %s\n", file), err)
+		log.Fatalf("Failed to read compiled file %s\n%s\n", file, err.Error())
 	}
 	codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
 
