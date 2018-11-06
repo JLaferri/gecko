@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -347,21 +348,50 @@ func compile(file string) []byte {
 	}
 	defer os.Remove("asm-to-compile.asm")
 
-	cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "asm-to-compile.asm")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Printf("Failed to compile file: %s\n", file)
-		fmt.Printf("%s", output)
-		os.Exit(1)
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "asm-to-compile.asm")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("Failed to compile file: %s\n", file)
+			fmt.Printf("%s", output)
+			os.Exit(1)
+		}
+		contents, err := ioutil.ReadFile("a.out")
+		if err != nil {
+			log.Fatalf("Failed to read compiled file %s\n%s\n", file, err.Error())
+		}
+
+		// I don't understand how this works (?)
+		codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
+		return contents[52:codeEndIndex]
 	}
 
-	contents, err := ioutil.ReadFile("a.out")
-	if err != nil {
-		log.Fatalf("Failed to read compiled file %s\n%s\n", file, err.Error())
+	// Just pray that powerpc-eabi-{as,objcopy} are in the user's $PATH, lol
+	if runtime.GOOS == "linux" {
+		cmd := exec.Command("powerpc-eabi-as", "-a32", "-mbig", "-mregnames", "asm-to-compile.asm")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("Failed to compile file: %s\n", file)
+			fmt.Printf("%s", output)
+			os.Exit(1)
+		}
+		cmd = exec.Command("powerpc-eabi-objcopy", "-O", "binary", "a.out", "a.out")
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("Failed to pull out .text section: %s\n", file)
+			fmt.Printf("%s", output)
+			os.Exit(1)
+		}
+		contents, err := ioutil.ReadFile("a.out")
+		if err != nil {
+			log.Fatalf("Failed to read compiled file %s\n%s\n", file, err.Error())
+		}
+		return contents
 	}
-	codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
 
-	return contents[52:codeEndIndex]
+	log.Fatalf("Platform unsupported?\n");
+	os.Exit(1);
+	return nil
 }
 
 func writeOutput(outputFile string) {
