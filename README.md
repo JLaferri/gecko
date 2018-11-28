@@ -5,8 +5,6 @@ I quickly put together this project to solve a problem I was having while develo
 Composite codes (perhaps there's a better term) is a trend I've been seeing where Melee developers package multiple individual Gecko codes as one single code. The process I described earlier gets even more annoying when I make changes to say 3 asm files at once. I have to correctly compile and replace every single one. I wanted an easier, faster, and less error prone method.
 
 Drawing inspiration from package managers such as npm, I thought it would be a good idea to just define what codes I wanted to compile and what addresses I wanted to inject at in a configuration file and just say "build". So that's what I did and currently that's the full scope of this simple project.
-## Requirements
-* **Windows** - The gekko asm tool used to compile code is packaged as an exe. If anyone would like to try something like running it using wine or something else to make it work on mac/linux I would be very interested in that. Haven't put forth much effort there myself.
 ## Installation
 1. Visit the [releases page](https://github.com/JLaferri/gecko/releases) to download the latest version
 2. Extract the files to a directory such as `C:\gecko\bin`. The contents include:
