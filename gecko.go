@@ -46,6 +46,7 @@ const (
 	Branch           = "branch"
 	BranchAndLink    = "branchAndLink"
 	InjectFolder     = "injectFolder"
+	ReplaceBinary    = "replaceBinary"
 )
 
 var output []string
@@ -130,6 +131,10 @@ func generateCodeLines(desc CodeDescription) []string {
 			result = append(result, lines...)
 		case ReplaceCodeBlock:
 			lines := generateReplaceCodeBlockLines(geckoCode.Address, geckoCode.SourceFile)
+			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+			result = append(result, lines...)
+		case ReplaceBinary:
+			lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
 		case Branch:
@@ -327,6 +332,36 @@ func generateReplaceCodeBlockLines(address, file string) []string {
 
 	return lines
 }
+
+func generateReplaceBinaryLines(address, file string) []string {
+	// TODO: Add error if address or value is incorrect length/format
+	lines := []string{}
+
+	contents, err := ioutil.ReadFile(file)
+	if err != nil {
+		log.Fatalf("Failed to read binary file %s\n%s\n", file, err.Error())
+	}
+
+	instructions := contents
+
+
+	// Fixes code to have an even number of words
+	if len(instructions)%8 != 0 {
+		instructions = append(instructions, 0x60, 0x00, 0x00, 0x00)
+	}
+
+	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), len(instructions)))
+
+	for i := 0; i < len(instructions); i += 8 {
+		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
+		right := strings.ToUpper(hex.EncodeToString(instructions[i+4 : i+8]))
+		lines = append(lines, fmt.Sprintf("%s %s", left, right))
+	}
+
+	return lines
+}
+
+
 
 func compile(file string) []byte {
 	defer os.Remove("a.out")
