@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -45,22 +46,28 @@ const (
 	Branch           = "branch"
 	BranchAndLink    = "branchAndLink"
 	InjectFolder     = "injectFolder"
+	ReplaceBinary    = "replaceBinary"
 )
 
 var output []string
 
 func main() {
+	defer func() {
+		// Recover from panic to prevent printing stack trace
+		recover()
+	}()
+
 	if len(os.Args) < 2 {
-		log.Fatal("Must provide a command. Try typing 'gecko build'\n")
+		log.Panic("Must provide a command. Try typing 'gecko build'\n")
 	}
 
 	if os.Args[1] != "build" {
-		log.Fatal("Currently only the build command is supported. Try typing 'gecko build'\n")
+		log.Panic("Currently only the build command is supported. Try typing 'gecko build'\n")
 	}
 
 	config := readConfigFile()
 	if len(config.OutputFiles) < 1 {
-		log.Fatal("Must have at least one output file configured in the outputFiles field\n")
+		log.Panic("Must have at least one output file configured in the outputFiles field\n")
 	}
 
 	buildBody(config)
@@ -73,13 +80,13 @@ func main() {
 func readConfigFile() Config {
 	contents, err := ioutil.ReadFile("codes.json")
 	if err != nil {
-		log.Fatal("Failed to read config file codes.json\n", err)
+		log.Panic("Failed to read config file codes.json\n", err)
 	}
 
 	var result Config
 	err = json.Unmarshal(contents, &result)
 	if err != nil {
-		log.Fatal(
+		log.Panic(
 			"Failed to get json content from config file. Check for syntax error/valid json\n",
 			err,
 		)
@@ -131,6 +138,10 @@ func generateCodeLines(desc CodeDescription) []string {
 			lines := generateReplaceCodeBlockLines(geckoCode.Address, geckoCode.SourceFile)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
+		case ReplaceBinary:
+			lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
+			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+			result = append(result, lines...)
 		case Branch:
 			fallthrough
 		case BranchAndLink:
@@ -158,7 +169,7 @@ func generateBranchCodeLine(address, targetAddress string, shouldLink bool) stri
 	addressUint, err := strconv.ParseUint(address[2:], 16, 32)
 	targetAddressUint, err := strconv.ParseUint(targetAddress[2:], 16, 32)
 	if err != nil {
-		log.Fatal("Failed to parse address or target address.", err)
+		log.Panic("Failed to parse address or target address.", err)
 	}
 
 	addressDiff := targetAddressUint - addressUint
@@ -193,7 +204,7 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 
 	contents, err := ioutil.ReadDir(folder)
 	if err != nil {
-		log.Fatal("Failed to read directory.", err)
+		log.Panic("Failed to read directory.", err)
 	}
 
 	for _, file := range contents {
@@ -208,7 +219,7 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 
 		file, err := os.Open(filePath)
 		if err != nil {
-			log.Fatalf("Failed to read file at %s\n%s\n", filePath, err.Error())
+			log.Panicf("Failed to read file at %s\n%s\n", filePath, err.Error())
 		}
 		defer file.Close()
 
@@ -229,7 +240,7 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 				errMsg += errStr[0] + "\n"
 			}
 
-			log.Fatal(errMsg)
+			log.Panic(errMsg)
 		}
 
 		// Get address
@@ -275,7 +286,7 @@ func generateInjectionCodeLines(address, file string) []string {
 	instructionLen := len(instructions)
 
 	if instructionLen == 0 {
-		log.Fatalf("Did not find any code in file: %s\n", file)
+		log.Panicf("Did not find any code in file: %s\n", file)
 	}
 
 	if instructionLen == 4 {
@@ -327,6 +338,33 @@ func generateReplaceCodeBlockLines(address, file string) []string {
 	return lines
 }
 
+func generateReplaceBinaryLines(address, file string) []string {
+	// TODO: Add error if address or value is incorrect length/format
+	lines := []string{}
+
+	contents, err := ioutil.ReadFile(file)
+	if err != nil {
+		log.Panicf("Failed to read binary file %s\n%s\n", file, err.Error())
+	}
+
+	instructions := contents
+
+	// Fixes code to have an even number of words
+	if len(instructions)%8 != 0 {
+		instructions = append(instructions, 0x60, 0x00, 0x00, 0x00)
+	}
+
+	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), len(instructions)))
+
+	for i := 0; i < len(instructions); i += 8 {
+		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
+		right := strings.ToUpper(hex.EncodeToString(instructions[i+4 : i+8]))
+		lines = append(lines, fmt.Sprintf("%s %s", left, right))
+	}
+
+	return lines
+}
+
 func compile(file string) []byte {
 	defer os.Remove("a.out")
 
@@ -336,32 +374,61 @@ func compile(file string) []byte {
 	// instruction is ignored and not compiled
 	asmContents, err := ioutil.ReadFile(file)
 	if err != nil {
-		log.Fatalf("Failed to read asm file: %s\n%s\n", file, err.Error())
+		log.Panicf("Failed to read asm file: %s\n%s\n", file, err.Error())
 	}
 
 	// Explicitly add a new line at the end of the file, which should prevent line skip
 	asmContents = append(asmContents, []byte("\r\n")...)
 	err = ioutil.WriteFile("asm-to-compile.asm", asmContents, 0644)
 	if err != nil {
-		log.Fatalf("Failed to write temporary asm file\n%s\n", err.Error())
+		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
 	}
 	defer os.Remove("asm-to-compile.asm")
 
-	cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "asm-to-compile.asm")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Printf("Failed to compile file: %s\n", file)
-		fmt.Printf("%s", output)
-		os.Exit(1)
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "asm-to-compile.asm")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("Failed to compile file: %s\n", file)
+			fmt.Printf("%s", output)
+			os.Exit(1)
+		}
+		contents, err := ioutil.ReadFile("a.out")
+		if err != nil {
+			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
+		}
+
+		// I don't understand how this works (?)
+		codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
+		return contents[52:codeEndIndex]
 	}
 
-	contents, err := ioutil.ReadFile("a.out")
-	if err != nil {
-		log.Fatalf("Failed to read compiled file %s\n%s\n", file, err.Error())
+	// Just pray that powerpc-eabi-{as,objcopy} are in the user's $PATH, lol
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		cmd := exec.Command("powerpc-eabi-as", "-a32", "-mbig", "-mregnames", "asm-to-compile.asm")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("Failed to compile file: %s\n", file)
+			fmt.Printf("%s", output)
+			os.Exit(1)
+		}
+		cmd = exec.Command("powerpc-eabi-objcopy", "-O", "binary", "a.out", "a.out")
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("Failed to pull out .text section: %s\n", file)
+			fmt.Printf("%s", output)
+			os.Exit(1)
+		}
+		contents, err := ioutil.ReadFile("a.out")
+		if err != nil {
+			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
+		}
+		return contents
 	}
-	codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
 
-	return contents[52:codeEndIndex]
+	log.Panicf("Platform unsupported\n")
+	os.Exit(1)
+	return nil
 }
 
 func writeOutput(outputFile string) {
