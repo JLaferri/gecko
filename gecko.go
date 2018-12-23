@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -60,33 +61,62 @@ var output []string
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
-	fmt.Printf("Process time was %s", elapsed)
+	fmt.Printf("Process time was %s\n", elapsed)
 }
 
 func main() {
-	defer timeTrack(time.Now())
-
-	defer func() {
+	defer func(startTime time.Time) {
 		// Recover from panic to prevent printing stack trace
-		recover()
-	}()
+		r := recover()
+		if r == nil {
+			// Here we completed successfully, in that case, show time output
+			timeTrack(startTime)
+		}
+	}(time.Now())
 
 	if len(os.Args) < 2 {
 		log.Panic("Must provide a command. Try typing 'gecko build'\n")
 	}
 
-	if os.Args[1] != "build" {
-		log.Panic("Currently only the build command is supported. Try typing 'gecko build'\n")
+	outputFilePaths := []string{}
+
+	command := os.Args[1]
+	switch command {
+	case "build":
+		config := readConfigFile()
+		if len(config.OutputFiles) < 1 {
+			log.Panic("Must have at least one output file configured in the outputFiles field\n")
+		}
+
+		buildBody(config)
+		outputFilePaths = config.OutputFiles
+	case "assemble":
+		assembleFlags := flag.NewFlagSet("assemble", flag.ExitOnError)
+		outputFilePtr := assembleFlags.String(
+			"o",
+			"Codes.txt",
+			"The output file path. Using a .gct extension will output a gct. Everything else will output text.",
+		)
+		assemblePathPtr := assembleFlags.String(
+			"p",
+			".",
+			"The root directory to assemble. Will default to the current directory.",
+		)
+		isRecursivePtr := assembleFlags.Bool(
+			"r",
+			true,
+			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
+		)
+		assembleFlags.Parse(os.Args[2:])
+
+		outputFilePaths = append(outputFilePaths, *outputFilePtr)
+		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
+	default:
+		log.Panic("Currently only the build and assemble commands are supported. Try typing 'gecko build'\n")
 	}
 
-	config := readConfigFile()
-	if len(config.OutputFiles) < 1 {
-		log.Panic("Must have at least one output file configured in the outputFiles field\n")
-	}
-
-	buildBody(config)
-
-	for _, file := range config.OutputFiles {
+	// Write output
+	for _, file := range outputFilePaths {
 		writeOutput(file)
 	}
 }
@@ -221,7 +251,7 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 	folders := []string{rootFolder}
 	for len(folders) > 0 {
 		folder := folders[0]
-		folders = folders[1:len(folders)]
+		folders = folders[1:]
 
 		contents, err := ioutil.ReadDir(folder)
 		if err != nil {
@@ -418,7 +448,9 @@ func compile(file string) []byte {
 	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
 	compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
 
+	// Clean up files
 	defer os.Remove(outputFilePath)
+	defer os.Remove(compileFilePath)
 
 	// First we are gonna load all the data from file and write it into temp file
 	// Technically this shouldn't be necessary but for some reason if the last line
@@ -435,7 +467,6 @@ func compile(file string) []byte {
 	if err != nil {
 		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
 	}
-	defer os.Remove(compileFilePath)
 
 	if runtime.GOOS == "windows" {
 		cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "-o", outputFilePath, compileFilePath)
