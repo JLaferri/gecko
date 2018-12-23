@@ -43,8 +43,9 @@ type GeckoCode struct {
 }
 
 type compileResult struct {
-	Order int
-	Lines []string
+	Order   int
+	Lines   []string
+	IsError bool
 }
 
 const (
@@ -344,6 +345,13 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 		}
 
 		go func(address, filePath string, orderNum int) {
+			defer func() {
+				if r := recover(); r != nil {
+					// Add recover to prevent stack traces
+					resultsChan <- compileResult{IsError: true}
+				}
+			}()
+
 			// Compile file and add lines
 			fileLines := generateInjectionCodeLines(address, filePath)
 			fileLines[0] = addLineAnnotation(fileLines[0], filePath)
@@ -356,7 +364,11 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 	// Aggregate all of the results from our channel
 	results := []compileResult{}
 	for i := 0; i < processedFileCount; i++ {
-		results = append(results, <-resultsChan)
+		var result = <-resultsChan
+		if result.IsError {
+			log.Panicf("Failed to compile at least one file\n")
+		}
+		results = append(results, result)
 	}
 
 	// Sort the results based on their order
