@@ -12,8 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -39,6 +41,11 @@ type GeckoCode struct {
 	Value         string
 }
 
+type compileResult struct {
+	Order int
+	Lines []string
+}
+
 const (
 	Replace          = "replace"
 	Inject           = "inject"
@@ -51,7 +58,14 @@ const (
 
 var output []string
 
+func timeTrack(start time.Time) {
+	elapsed := time.Since(start)
+	fmt.Printf("Process time was %s", elapsed)
+}
+
 func main() {
+	defer timeTrack(time.Now())
+
 	defer func() {
 		// Recover from panic to prevent printing stack trace
 		recover()
@@ -199,24 +213,52 @@ func addLineAnnotation(line, annotation string) string {
 	return fmt.Sprintf("%s #%s", line, annotation)
 }
 
-func generateInjectionFolderLines(folder string, isRecursive bool) []string {
+func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string {
 	lines := []string{}
+	asmFilePaths := []string{}
 
-	contents, err := ioutil.ReadDir(folder)
-	if err != nil {
-		log.Panic("Failed to read directory.", err)
-	}
+	// First collect all of the asm files we need to process
+	folders := []string{rootFolder}
+	for len(folders) > 0 {
+		folder := folders[0]
+		folders = folders[1:len(folders)]
 
-	for _, file := range contents {
-		fileName := file.Name()
-		ext := filepath.Ext(fileName)
-		if ext != ".asm" {
-			continue
+		contents, err := ioutil.ReadDir(folder)
+		if err != nil {
+			log.Panic("Failed to read directory.", err)
 		}
 
-		// Get full filepath for file
-		filePath := filepath.Join(folder, fileName)
+		newFolders := []string{}
 
+		// Go through the files in this directory and collect asm files
+		for _, file := range contents {
+			// If this file is a directory and we are recursing,
+			// add this folder to folders for finding new files
+			if file.IsDir() && isRecursive {
+				folderName := file.Name()
+				folderPath := filepath.Join(folder, folderName)
+				newFolders = append(newFolders, folderPath)
+				continue
+			}
+
+			fileName := file.Name()
+			ext := filepath.Ext(fileName)
+			if ext != ".asm" {
+				continue
+			}
+
+			// Here we have an asm file, let's collect it
+			filePath := filepath.Join(folder, fileName)
+			asmFilePaths = append(asmFilePaths, filePath)
+		}
+
+		// Add new folders to front to do depth-first ordering
+		folders = append(newFolders, folders...)
+	}
+
+	processedFileCount := 0
+	resultsChan := make(chan compileResult, len(asmFilePaths))
+	for _, filePath := range asmFilePaths {
 		file, err := os.Open(filePath)
 		if err != nil {
 			log.Panicf("Failed to read file at %s\n%s\n", filePath, err.Error())
@@ -255,24 +297,30 @@ func generateInjectionFolderLines(folder string, isRecursive bool) []string {
 			indicateAddressError(err.Error())
 		}
 
-		// Compile file and add lines
-		fileLines := generateInjectionCodeLines(address, filePath)
-		fileLines[0] = addLineAnnotation(fileLines[0], filePath)
-		lines = append(lines, fileLines...)
+		go func(address, filePath string, orderNum int) {
+			// Compile file and add lines
+			fileLines := generateInjectionCodeLines(address, filePath)
+			fileLines[0] = addLineAnnotation(fileLines[0], filePath)
+			resultsChan <- compileResult{Order: orderNum, Lines: fileLines}
+		}(address, filePath, processedFileCount)
+
+		processedFileCount++
 	}
 
-	if isRecursive {
-		// If we are recursively searching folders, process sub-directories
-		for _, file := range contents {
-			if !file.IsDir() {
-				continue
-			}
+	// Aggregate all of the results from our channel
+	results := []compileResult{}
+	for i := 0; i < processedFileCount; i++ {
+		results = append(results, <-resultsChan)
+	}
 
-			folderName := file.Name()
-			folderPath := filepath.Join(folder, folderName)
-			folderLines := generateInjectionFolderLines(folderPath, isRecursive)
-			lines = append(lines, folderLines...)
-		}
+	// Sort the results based on their order
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Order < results[j].Order
+	})
+
+	// Add the results back to lines
+	for _, result := range results {
+		lines = append(lines, result.Lines...)
 	}
 
 	return lines
@@ -366,7 +414,11 @@ func generateReplaceBinaryLines(address, file string) []string {
 }
 
 func compile(file string) []byte {
-	defer os.Remove("a.out")
+	fileExt := filepath.Ext(file)
+	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
+	compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
+
+	defer os.Remove(outputFilePath)
 
 	// First we are gonna load all the data from file and write it into temp file
 	// Technically this shouldn't be necessary but for some reason if the last line
@@ -379,21 +431,21 @@ func compile(file string) []byte {
 
 	// Explicitly add a new line at the end of the file, which should prevent line skip
 	asmContents = append(asmContents, []byte("\r\n")...)
-	err = ioutil.WriteFile("asm-to-compile.asm", asmContents, 0644)
+	err = ioutil.WriteFile(compileFilePath, asmContents, 0644)
 	if err != nil {
 		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
 	}
-	defer os.Remove("asm-to-compile.asm")
+	defer os.Remove(compileFilePath)
 
 	if runtime.GOOS == "windows" {
-		cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "asm-to-compile.asm")
+		cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "-o", outputFilePath, compileFilePath)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
 			fmt.Printf("%s", output)
-			os.Exit(1)
+			panic("as failure")
 		}
-		contents, err := ioutil.ReadFile("a.out")
+		contents, err := ioutil.ReadFile(outputFilePath)
 		if err != nil {
 			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
 		}
@@ -405,21 +457,21 @@ func compile(file string) []byte {
 
 	// Just pray that powerpc-eabi-{as,objcopy} are in the user's $PATH, lol
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		cmd := exec.Command("powerpc-eabi-as", "-a32", "-mbig", "-mregnames", "asm-to-compile.asm")
+		cmd := exec.Command("powerpc-eabi-as", "-a32", "-mbig", "-mregnames", "-o", outputFilePath, compileFilePath)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
 			fmt.Printf("%s", output)
-			os.Exit(1)
+			panic("as failure")
 		}
-		cmd = exec.Command("powerpc-eabi-objcopy", "-O", "binary", "a.out", "a.out")
+		cmd = exec.Command("powerpc-eabi-objcopy", "-O", "binary", outputFilePath, outputFilePath)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to pull out .text section: %s\n", file)
 			fmt.Printf("%s", output)
-			os.Exit(1)
+			panic("objcopy failure")
 		}
-		contents, err := ioutil.ReadFile("a.out")
+		contents, err := ioutil.ReadFile(outputFilePath)
 		if err != nil {
 			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
 		}
@@ -427,7 +479,6 @@ func compile(file string) []byte {
 	}
 
 	log.Panicf("Platform unsupported\n")
-	os.Exit(1)
 	return nil
 }
 
