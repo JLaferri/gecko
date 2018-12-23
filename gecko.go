@@ -83,7 +83,15 @@ func main() {
 	command := os.Args[1]
 	switch command {
 	case "build":
-		config := readConfigFile()
+		buildFlags := flag.NewFlagSet("build", flag.ExitOnError)
+		configFilePathPtr := buildFlags.String(
+			"c",
+			"codes.json",
+			"Used to specify a path to a config file.",
+		)
+		buildFlags.Parse(os.Args[2:])
+
+		config := readConfigFile(*configFilePathPtr)
 		if len(config.OutputFiles) < 1 {
 			log.Panic("Must have at least one output file configured in the outputFiles field\n")
 		}
@@ -111,6 +119,14 @@ func main() {
 
 		outputFilePaths = append(outputFilePaths, *outputFilePtr)
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
+	case "-h":
+		// Print help information
+		fmt.Print("Usage: gecko <command> [flags]\n\n")
+		fmt.Println("Supported commands:")
+		fmt.Println("\tbuild - Uses a configuration file to build codes. Recommended for larger projects.")
+		fmt.Print("\tassemble - Assembles asm files in a given directory.\n\n")
+		fmt.Println("Use gecko <command> -h for information about the flags for the different commands")
+		os.Exit(1)
 	default:
 		log.Panic("Currently only the build and assemble commands are supported. Try typing 'gecko build'\n")
 	}
@@ -121,10 +137,10 @@ func main() {
 	}
 }
 
-func readConfigFile() Config {
-	contents, err := ioutil.ReadFile("codes.json")
+func readConfigFile(path string) Config {
+	contents, err := ioutil.ReadFile(path)
 	if err != nil {
-		log.Panic("Failed to read config file codes.json\n", err)
+		log.Panic("Failed to read config file\n", err)
 	}
 
 	var result Config
