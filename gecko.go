@@ -20,6 +20,7 @@ import (
 )
 
 type Config struct {
+	Settings    GeckoSettings
 	OutputFiles []string
 	Codes       []CodeDescription
 }
@@ -42,6 +43,10 @@ type GeckoCode struct {
 	Value         string
 }
 
+type GeckoSettings struct {
+	AreIncludesRelativeFromFile bool
+}
+
 type compileResult struct {
 	Order   int
 	Lines   []string
@@ -59,6 +64,7 @@ const (
 )
 
 var output []string
+var globalSettings GeckoSettings
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
@@ -97,6 +103,7 @@ func main() {
 			log.Panic("Must have at least one output file configured in the outputFiles field\n")
 		}
 
+		globalSettings = config.Settings
 		buildBody(config)
 		outputFilePaths = config.OutputFiles
 	case "assemble":
@@ -116,8 +123,17 @@ func main() {
 			true,
 			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
 		)
+		irffPtr := assembleFlags.Bool(
+			"irff",
+			false,
+			"Stands for \"includes relative from file\". The default behavior is that includes are relative "+
+				"from the current directory. This can be problematic if you need to, for example, build your "+
+				"project from more than one location. Setting this to true adds a pre-processing step where "+
+				"include statements are translated to make them be relative from the file's location.",
+		)
 		assembleFlags.Parse(os.Args[2:])
 
+		globalSettings = GeckoSettings{AreIncludesRelativeFromFile: *irffPtr}
 		outputFilePaths = append(outputFilePaths, *outputFilePtr)
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
 	case "-h":
@@ -365,10 +381,16 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 	results := []compileResult{}
 	for i := 0; i < processedFileCount; i++ {
 		var result = <-resultsChan
+		results = append(results, result)
+	}
+
+	// If any results returned an error, panic after all goroutines complete,
+	// this is primarily done so that all of the defer calls actually execute
+	// and the asmtemp files get properly cleaned up.
+	for _, result := range results {
 		if result.IsError {
 			log.Panicf("Failed to compile at least one file\n")
 		}
-		results = append(results, result)
 	}
 
 	// Sort the results based on their order
@@ -484,17 +506,7 @@ func compile(file string) []byte {
 	// Technically this shouldn't be necessary but for some reason if the last line
 	// or the asm file has one of more spaces at the end and no new line, the last
 	// instruction is ignored and not compiled
-	asmContents, err := ioutil.ReadFile(file)
-	if err != nil {
-		log.Panicf("Failed to read asm file: %s\n%s\n", file, err.Error())
-	}
-
-	// Explicitly add a new line at the end of the file, which should prevent line skip
-	asmContents = append(asmContents, []byte("\r\n")...)
-	err = ioutil.WriteFile(compileFilePath, asmContents, 0644)
-	if err != nil {
-		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
-	}
+	buildTempAsmFile(file, compileFilePath)
 
 	if runtime.GOOS == "windows" {
 		cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "-o", outputFilePath, compileFilePath)
@@ -539,6 +551,57 @@ func compile(file string) []byte {
 
 	log.Panicf("Platform unsupported\n")
 	return nil
+}
+
+func buildTempAsmFile(sourceFilePath, targetFilePath string) {
+	asmContents, err := ioutil.ReadFile(sourceFilePath)
+	if err != nil {
+		log.Panicf("Failed to read asm file: %s\n%s\n", sourceFilePath, err.Error())
+	}
+
+	includeString := ".include "
+	targetFileDirectory := filepath.Dir(targetFilePath)
+
+	// If global settings say includes should be relative from the file, we need
+	// to post-process all the .include statements and convert their paths
+	if globalSettings.AreIncludesRelativeFromFile {
+		lines := bytes.Split(asmContents, []byte{'\n'})
+		for idx, line := range lines {
+			trimmedLine := strings.TrimSpace(string(line))
+			isLineTooShort := len(trimmedLine) < len(includeString)
+			if isLineTooShort {
+				continue
+			}
+
+			isIncludeStatement := trimmedLine[:len(includeString)] == includeString
+			if !isIncludeStatement {
+				continue
+			}
+
+			// Here we have an include statement, so let's get the include path
+			includePath := strings.Trim(trimmedLine[len(includeString)+1:], " \t\"")
+			if filepath.IsAbs(includePath) {
+				// Don't change anything for an absolute path
+				continue
+			}
+
+			// Combine relative include path with the path of the file
+			includePath = filepath.Join(targetFileDirectory, includePath)
+			includePath = filepath.ToSlash(includePath) // No backslashes
+
+			// Store back newly generated absolute path
+			lines[idx] = []byte(includeString + "\"" + includePath + "\"")
+		}
+
+		asmContents = bytes.Join(lines, []byte{'\n'})
+	}
+
+	// Explicitly add a new line at the end of the file, which should prevent line skip
+	asmContents = append(asmContents, []byte("\r\n")...)
+	err = ioutil.WriteFile(targetFilePath, asmContents, 0644)
+	if err != nil {
+		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
+	}
 }
 
 func writeOutput(outputFile string) {
