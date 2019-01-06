@@ -61,6 +61,7 @@ const (
 	BranchAndLink    = "branchAndLink"
 	InjectFolder     = "injectFolder"
 	ReplaceBinary    = "replaceBinary"
+	Binary           = "binary"
 )
 
 var output []string
@@ -219,6 +220,10 @@ func generateCodeLines(desc CodeDescription) []string {
 			lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
+		case Binary:
+			lines := generateBinaryLines(geckoCode.SourceFile)
+			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+			result = append(result, lines...)
 		case Branch:
 			fallthrough
 		case BranchAndLink:
@@ -229,6 +234,8 @@ func generateCodeLines(desc CodeDescription) []string {
 		case InjectFolder:
 			lines := generateInjectionFolderLines(geckoCode.SourceFolder, geckoCode.IsRecursive)
 			result = append(result, lines...)
+		default:
+			log.Panicf("Unsupported build type: %s\n", geckoCode.Type)
 		}
 	}
 
@@ -449,13 +456,14 @@ func generateReplaceCodeBlockLines(address, file string) []string {
 	lines := []string{}
 
 	instructions := compile(file)
+	codeBlockLen := len(instructions)
 
 	// Fixes code to have an even number of words
 	if len(instructions)%8 != 0 {
-		instructions = append(instructions, 0x60, 0x00, 0x00, 0x00)
+		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), len(instructions)))
+	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), codeBlockLen))
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
@@ -476,13 +484,42 @@ func generateReplaceBinaryLines(address, file string) []string {
 	}
 
 	instructions := contents
+	contentBlockLen := len(instructions)
 
 	// Fixes code to have an even number of words
 	if len(instructions)%8 != 0 {
-		instructions = append(instructions, 0x60, 0x00, 0x00, 0x00)
+		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), len(instructions)))
+	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), contentBlockLen))
+
+	for i := 0; i < len(instructions); i += 8 {
+		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
+		right := strings.ToUpper(hex.EncodeToString(instructions[i+4 : i+8]))
+		lines = append(lines, fmt.Sprintf("%s %s", left, right))
+	}
+
+	return lines
+}
+
+func generateBinaryLines(file string) []string {
+	lines := []string{}
+
+	contents, err := ioutil.ReadFile(file)
+	if err != nil {
+		log.Panicf("Failed to read binary file %s\n%s\n", file, err.Error())
+	}
+
+	instructions := contents
+
+	if len(instructions) == 0 {
+		log.Panicf("Binary file must not be empty: %s\n", file)
+	}
+
+	// Fixes code to have an even number of words
+	if len(instructions)%8 != 0 {
+		log.Panicf("Binary file must have byte count divisable by 8: %s\n", file)
+	}
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
@@ -619,7 +656,10 @@ func writeOutput(outputFile string) {
 
 func writeTextOutput(outputFile string) {
 	fullText := strings.Join(output, "\n")
-	ioutil.WriteFile(outputFile, []byte(fullText), 0644)
+	err := ioutil.WriteFile(outputFile, []byte(fullText), 0644)
+	if err != nil {
+		log.Panic("Failed to write file\n", err)
+	}
 }
 
 func writeGctOutput(outputFile string) {
@@ -641,5 +681,8 @@ func writeGctOutput(outputFile string) {
 	}
 
 	gctBytes = append(gctBytes, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-	ioutil.WriteFile(outputFile, gctBytes, 0644)
+	err := ioutil.WriteFile(outputFile, gctBytes, 0644)
+	if err != nil {
+		log.Panic("Failed to write file\n", err)
+	}
 }
