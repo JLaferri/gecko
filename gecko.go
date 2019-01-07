@@ -21,8 +21,13 @@ import (
 
 type Config struct {
 	Settings    GeckoSettings
-	OutputFiles []string
+	OutputFiles []FileDetails
 	Codes       []CodeDescription
+}
+
+type FileDetails struct {
+	File   string
+	Header []string
 }
 
 type CodeDescription struct {
@@ -86,7 +91,7 @@ func main() {
 		log.Panic("Must provide a command. Try typing 'gecko build'\n")
 	}
 
-	outputFilePaths := []string{}
+	outputFiles := []FileDetails{}
 
 	command := os.Args[1]
 	switch command {
@@ -106,7 +111,7 @@ func main() {
 
 		globalSettings = config.Settings
 		buildBody(config)
-		outputFilePaths = config.OutputFiles
+		outputFiles = config.OutputFiles
 	case "assemble":
 		assembleFlags := flag.NewFlagSet("assemble", flag.ExitOnError)
 		outputFilePtr := assembleFlags.String(
@@ -135,7 +140,7 @@ func main() {
 		assembleFlags.Parse(os.Args[2:])
 
 		globalSettings = GeckoSettings{AreIncludesRelativeFromFile: *irffPtr}
-		outputFilePaths = append(outputFilePaths, *outputFilePtr)
+		outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
 	case "-h":
 		// Print help information
@@ -150,7 +155,7 @@ func main() {
 	}
 
 	// Write output
-	for _, file := range outputFilePaths {
+	for _, file := range outputFiles {
 		writeOutput(file)
 	}
 }
@@ -641,28 +646,29 @@ func buildTempAsmFile(sourceFilePath, targetFilePath string) {
 	}
 }
 
-func writeOutput(outputFile string) {
-	fmt.Printf("Writing to %s...\n", outputFile)
-	ext := filepath.Ext(outputFile)
+func writeOutput(details FileDetails) {
+	fmt.Printf("Writing to %s...\n", details.File)
+	ext := filepath.Ext(details.File)
 	switch ext {
 	case ".gct":
-		writeGctOutput(outputFile)
+		writeGctOutput(details)
 	default:
-		writeTextOutput(outputFile)
+		writeTextOutput(details)
 	}
 
-	fmt.Printf("Successfuly wrote codes to %s\n", outputFile)
+	fmt.Printf("Successfuly wrote codes to %s\n", details.File)
 }
 
-func writeTextOutput(outputFile string) {
-	fullText := strings.Join(output, "\n")
-	err := ioutil.WriteFile(outputFile, []byte(fullText), 0644)
+func writeTextOutput(details FileDetails) {
+	outputWithHeader := append(details.Header, output...)
+	fullText := strings.Join(outputWithHeader, "\n")
+	err := ioutil.WriteFile(details.File, []byte(fullText), 0644)
 	if err != nil {
 		log.Panic("Failed to write file\n", err)
 	}
 }
 
-func writeGctOutput(outputFile string) {
+func writeGctOutput(details FileDetails) {
 	gctBytes := []byte{0x00, 0xD0, 0xC0, 0xDE, 0x00, 0xD0, 0xC0, 0xDE}
 
 	for _, line := range output {
@@ -681,7 +687,7 @@ func writeGctOutput(outputFile string) {
 	}
 
 	gctBytes = append(gctBytes, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-	err := ioutil.WriteFile(outputFile, gctBytes, 0644)
+	err := ioutil.WriteFile(details.File, gctBytes, 0644)
 	if err != nil {
 		log.Panic("Failed to write file\n", err)
 	}
