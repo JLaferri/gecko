@@ -382,7 +382,8 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 
 			// Compile file and add lines
 			fileLines := generateInjectionCodeLines(address, filePath)
-			fileLines[0] = addLineAnnotation(fileLines[0], filePath)
+			forwardSlashPath := filepath.ToSlash(filePath)
+			fileLines[0] = addLineAnnotation(fileLines[0], forwardSlashPath)
 			resultsChan <- compileResult{Order: orderNum, Lines: fileLines}
 		}(address, filePath, processedFileCount)
 
