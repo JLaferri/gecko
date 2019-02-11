@@ -653,6 +653,8 @@ func writeOutput(details FileDetails) {
 	switch ext {
 	case ".gct":
 		writeGctOutput(details)
+	case ".bin":
+		writeBinOutput(details)
 	default:
 		writeTextOutput(details)
 	}
@@ -663,16 +665,29 @@ func writeOutput(details FileDetails) {
 func writeTextOutput(details FileDetails) {
 	outputWithHeader := append(details.Header, output...)
 	fullText := strings.Join(outputWithHeader, "\n")
-	err := ioutil.WriteFile(details.File, []byte(fullText), 0644)
-	if err != nil {
-		log.Panic("Failed to write file\n", err)
-	}
+	writeFile(details.File, []byte(fullText))
 }
 
 func writeGctOutput(details FileDetails) {
 	gctBytes := []byte{0x00, 0xD0, 0xC0, 0xDE, 0x00, 0xD0, 0xC0, 0xDE}
 
-	for _, line := range output {
+	outputBytes := convertLinesToBinary(output)
+	gctBytes = append(gctBytes, outputBytes...)
+
+	gctBytes = append(gctBytes, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+	writeFile(details.File, gctBytes)
+}
+
+func writeBinOutput(details FileDetails) {
+	outputBytes := convertLinesToBinary(output)
+
+	writeFile(details.File, outputBytes)
+}
+
+func convertLinesToBinary(lines []string) []byte {
+	bytes := []byte{}
+
+	for _, line := range lines {
 		if len(line) < 17 {
 			// lines with less than 17 characters cannot be code lines
 			continue
@@ -684,11 +699,17 @@ func writeGctOutput(details FileDetails) {
 			continue
 		}
 
-		gctBytes = append(gctBytes, lineBytes...)
+		bytes = append(bytes, lineBytes...)
 	}
 
-	gctBytes = append(gctBytes, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-	err := ioutil.WriteFile(details.File, gctBytes, 0644)
+	return bytes
+}
+
+func writeFile(filePath string, bytes []byte) {
+	dirPath := filepath.Dir(filePath)
+	os.MkdirAll(dirPath, os.ModePerm)
+
+	err := ioutil.WriteFile(filePath, bytes, 0644)
 	if err != nil {
 		log.Panic("Failed to write file\n", err)
 	}
