@@ -552,7 +552,13 @@ func compile(file string) []byte {
 	buildTempAsmFile(file, compileFilePath)
 
 	if runtime.GOOS == "windows" {
-		cmd := exec.Command("powerpc-gekko-as.exe", "-a32", "-mbig", "-mregnames", "-mgekko", "-o", outputFilePath, compileFilePath)
+		const asCmdWin = "powerpc-gekko-as.exe"
+		_, err := exec.LookPath(asCmdWin)
+		if err != nil {
+			log.Panicf("%s not available in $PATH", asCmdWin)
+		}
+
+		cmd := exec.Command(asCmdWin, "-a32", "-mbig", "-mregnames", "-mgekko", "-o", outputFilePath, compileFilePath)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
@@ -569,16 +575,26 @@ func compile(file string) []byte {
 		return contents[52:codeEndIndex]
 	}
 
-	// Just pray that powerpc-eabi-{as,objcopy} are in the user's $PATH, lol
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		cmd := exec.Command("powerpc-eabi-as", "-a32", "-mbig", "-mregnames", "-o", outputFilePath, compileFilePath)
+		const asCmdLinux string = "powerpc-eabi-as"
+		const objcopyCmdLinux string = "powerpc-eabi-objcopy"
+		_, err := exec.LookPath(asCmdLinux)
+		if err != nil {
+			log.Panicf("%s not available in $PATH", asCmdLinux)
+		}
+		_, err = exec.LookPath(objcopyCmdLinux)
+		if err != nil {
+			log.Panicf("% not available in $PATH", objcopyCmdLinux)
+		}
+
+		cmd := exec.Command(asCmdLinux, "-a32", "-mbig", "-mregnames", "-o", outputFilePath, compileFilePath)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
 			fmt.Printf("%s", output)
 			panic("as failure")
 		}
-		cmd = exec.Command("powerpc-eabi-objcopy", "-O", "binary", outputFilePath, outputFilePath)
+		cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to pull out .text section: %s\n", file)
