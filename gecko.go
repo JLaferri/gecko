@@ -580,11 +580,11 @@ func compile(file string) []byte {
 		const objcopyCmdLinux string = "powerpc-eabi-objcopy"
 		_, err := exec.LookPath(asCmdLinux)
 		if err != nil {
-			log.Panicf("%s not available in $PATH", asCmdLinux)
+			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
 		}
 		_, err = exec.LookPath(objcopyCmdLinux)
 		if err != nil {
-			log.Panicf("% not available in $PATH", objcopyCmdLinux)
+			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
 		}
 
 		cmd := exec.Command(asCmdLinux, "-a32", "-mbig", "-mregnames", "-o", outputFilePath, compileFilePath)
