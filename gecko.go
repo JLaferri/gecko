@@ -50,6 +50,8 @@ type GeckoCode struct {
 
 type GeckoSettings struct {
 	AreIncludesRelativeFromFile bool
+	AsFlags string
+	Verbose bool
 }
 
 type compileResult struct {
@@ -137,9 +139,19 @@ func main() {
 				"project from more than one location. Setting this to true adds a pre-processing step where "+
 				"include statements are translated to make them be relative from the file's location.",
 		)
+		asFlagsPtr := assembleFlags.String(
+			"asflags",
+			"",
+			"A string of additional arguments to-be-passed to `as`.",
+		)
+		isVerbosePtr := assembleFlags.Bool(
+			"v",
+			false,
+			"Enable verbose output. Writes debug/logging information to stdout.",
+		)
 		assembleFlags.Parse(os.Args[2:])
 
-		globalSettings = GeckoSettings{AreIncludesRelativeFromFile: *irffPtr}
+		globalSettings = GeckoSettings{AreIncludesRelativeFromFile: *irffPtr, AsFlags: *asFlagsPtr, Verbose: *isVerbosePtr}
 		outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
 	case "-h":
@@ -551,14 +563,20 @@ func compile(file string) []byte {
 	// instruction is ignored and not compiled
 	buildTempAsmFile(file, compileFilePath)
 
+	const asCmdWin = "powerpc-gekko-as.exe"
+	const asCmdLinux string = "powerpc-eabi-as"
+	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
+
 	if runtime.GOOS == "windows" {
-		const asCmdWin = "powerpc-gekko-as.exe"
 		_, err := exec.LookPath(asCmdWin)
 		if err != nil {
 			log.Panicf("%s not available in $PATH", asCmdWin)
 		}
+		if globalSettings.Verbose {
+			fmt.Println("[*] Executing", asCmdWin, compileFilePath, "-a32 -mbig -mregnames -mgekko", globalSettings.AsFlags, "-o", outputFilePath)
+		}
 
-		cmd := exec.Command(asCmdWin, "-a32", "-mbig", "-mregnames", "-mgekko", "-o", outputFilePath, compileFilePath)
+		cmd := exec.Command(asCmdWin, compileFilePath, "-a32", "-mbig", "-mregnames", "-mgekko", globalSettings.AsFlags, "-o", outputFilePath)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
@@ -576,8 +594,6 @@ func compile(file string) []byte {
 	}
 
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		const asCmdLinux string = "powerpc-eabi-as"
-		const objcopyCmdLinux string = "powerpc-eabi-objcopy"
 		_, err := exec.LookPath(asCmdLinux)
 		if err != nil {
 			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
@@ -586,8 +602,11 @@ func compile(file string) []byte {
 		if err != nil {
 			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
 		}
+		if globalSettings.Verbose {
+			fmt.Println("[*] Executing", asCmdLinux, compileFilePath, "-a32 -mbig -mregnames -mgekko", globalSettings.AsFlags, "-o", outputFilePath)
+		}
 
-		cmd := exec.Command(asCmdLinux, "-a32", "-mbig", "-mregnames", "-o", outputFilePath, compileFilePath)
+		cmd := exec.Command(asCmdLinux, compileFilePath, "-a32", "-mbig", "-mregnames", globalSettings.AsFlags, "-o", outputFilePath)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
