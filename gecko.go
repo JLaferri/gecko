@@ -51,7 +51,6 @@ type GeckoCode struct {
 type GeckoSettings struct {
 	AreIncludesRelativeFromFile bool
 	AsFlags string
-	Verbose bool
 }
 
 type compileResult struct {
@@ -104,6 +103,12 @@ func main() {
 			"codes.json",
 			"Used to specify a path to a config file.",
 		)
+		asFlagsPtr := buildFlags.String(
+			"asflags",
+			"",
+			"A string of additional arguments to-be-passed to the assembler (takes precedence over config file).",
+		)
+
 		buildFlags.Parse(os.Args[2:])
 
 		config := readConfigFile(*configFilePathPtr)
@@ -112,8 +117,15 @@ func main() {
 		}
 
 		globalSettings = config.Settings
+
+		// Let command-line arguments take precedence over settings in the configuration file 
+		if (len(*asFlagsPtr) > 0) {
+			globalSettings.AsFlags = *asFlagsPtr
+		}
+
 		buildBody(config)
 		outputFiles = config.OutputFiles
+
 	case "assemble":
 		assembleFlags := flag.NewFlagSet("assemble", flag.ExitOnError)
 		outputFilePtr := assembleFlags.String(
@@ -142,26 +154,23 @@ func main() {
 		asFlagsPtr := assembleFlags.String(
 			"asflags",
 			"",
-			"A string of additional arguments to-be-passed to `as`.",
+			"A string of additional arguments to-be-passed to the assembler.",
 		)
-		isVerbosePtr := assembleFlags.Bool(
-			"v",
-			false,
-			"Enable verbose output. Writes debug/logging information to stdout.",
-		)
+
 		assembleFlags.Parse(os.Args[2:])
 
-		globalSettings = GeckoSettings{AreIncludesRelativeFromFile: *irffPtr, AsFlags: *asFlagsPtr, Verbose: *isVerbosePtr}
+		globalSettings = GeckoSettings{AreIncludesRelativeFromFile: *irffPtr, AsFlags: *asFlagsPtr}
 		outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
+
 	case "-h":
-		// Print help information
 		fmt.Print("Usage: gecko <command> [flags]\n\n")
 		fmt.Println("Supported commands:")
 		fmt.Println("\tbuild - Uses a configuration file to build codes. Recommended for larger projects.")
 		fmt.Print("\tassemble - Assembles asm files in a given directory.\n\n")
 		fmt.Println("Use gecko <command> -h for information about the flags for the different commands")
 		os.Exit(1)
+
 	default:
 		log.Panic("Currently only the build and assemble commands are supported. Try typing 'gecko build'\n")
 	}
@@ -572,12 +581,10 @@ func compile(file string) []byte {
 		if err != nil {
 			log.Panicf("%s not available in $PATH", asCmdWin)
 		}
-		if globalSettings.Verbose {
-			fmt.Println("[*] Executing", asCmdWin, compileFilePath, "-a32 -mbig -mregnames -mgekko", globalSettings.AsFlags, "-o", outputFilePath)
-		}
 
 		cmd := exec.Command(asCmdWin, compileFilePath, "-a32", "-mbig", "-mregnames", "-mgekko", globalSettings.AsFlags, "-o", outputFilePath)
 		output, err := cmd.CombinedOutput()
+		fmt.Printf("%s", output);
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
 			fmt.Printf("%s", output)
@@ -602,12 +609,10 @@ func compile(file string) []byte {
 		if err != nil {
 			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
 		}
-		if globalSettings.Verbose {
-			fmt.Println("[*] Executing", asCmdLinux, compileFilePath, "-a32 -mbig -mregnames -mgekko", globalSettings.AsFlags, "-o", outputFilePath)
-		}
 
 		cmd := exec.Command(asCmdLinux, compileFilePath, "-a32", "-mbig", "-mregnames", globalSettings.AsFlags, "-o", outputFilePath)
 		output, err := cmd.CombinedOutput()
+		fmt.Printf("%s", output);
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
 			fmt.Printf("%s", output)
