@@ -20,7 +20,6 @@ import (
 )
 
 type Config struct {
-	Settings    GeckoSettings
 	OutputFiles []FileDetails
 	Codes       []CodeDescription
 }
@@ -48,10 +47,6 @@ type GeckoCode struct {
 	Value         string
 }
 
-type GeckoSettings struct {
-	AreIncludesRelativeFromFile bool
-}
-
 type compileResult struct {
 	Order   int
 	Lines   []string
@@ -69,8 +64,14 @@ const (
 	Binary           = "binary"
 )
 
+type assemblerArgConfig struct {
+	ProjectRoot string
+	DefSym      string
+}
+
+var argConfig assemblerArgConfig
+
 var output []string
-var globalSettings GeckoSettings
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
@@ -102,6 +103,11 @@ func main() {
 			"codes.json",
 			"Used to specify a path to a config file.",
 		)
+		defsymPtr := buildFlags.String(
+			"defsym",
+			"",
+			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
+		)
 		buildFlags.Parse(os.Args[2:])
 
 		config := readConfigFile(*configFilePathPtr)
@@ -109,7 +115,15 @@ func main() {
 			log.Panic("Must have at least one output file configured in the outputFiles field\n")
 		}
 
-		globalSettings = config.Settings
+		configDir := filepath.Dir(*configFilePathPtr)
+		projectRootTemp, err := filepath.Abs(configDir)
+		if err != nil {
+			log.Panic("Failed to convert project root dir\n", err)
+		}
+
+		argConfig.ProjectRoot = projectRootTemp
+		argConfig.DefSym = *defsymPtr
+
 		buildBody(config)
 		outputFiles = config.OutputFiles
 	case "assemble":
@@ -129,17 +143,22 @@ func main() {
 			true,
 			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
 		)
-		irffPtr := assembleFlags.Bool(
-			"irff",
-			false,
-			"Stands for \"includes relative from file\". The default behavior is that includes are relative "+
-				"from the current directory. This can be problematic if you need to, for example, build your "+
-				"project from more than one location. Setting this to true adds a pre-processing step where "+
-				"include statements are translated to make them be relative from the file's location.",
+		defsymPtr := assembleFlags.String(
+			"defsym",
+			"",
+			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
 		)
 		assembleFlags.Parse(os.Args[2:])
 
-		globalSettings = GeckoSettings{AreIncludesRelativeFromFile: *irffPtr}
+		configDir := filepath.Dir(*assemblePathPtr)
+		projectRootTemp, err := filepath.Abs(configDir)
+		if err != nil {
+			log.Panic("Failed to convert project root dir\n", err)
+		}
+
+		argConfig.ProjectRoot = projectRootTemp
+		argConfig.DefSym = *defsymPtr
+
 		outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
 	case "-h":
@@ -551,6 +570,8 @@ func compile(file string) []byte {
 	// instruction is ignored and not compiled
 	buildTempAsmFile(file, compileFilePath)
 
+	fileDir := filepath.Dir(file)
+
 	if runtime.GOOS == "windows" {
 		const asCmdWin = "powerpc-gekko-as.exe"
 		_, err := exec.LookPath(asCmdWin)
@@ -558,7 +579,23 @@ func compile(file string) []byte {
 			log.Panicf("%s not available in $PATH", asCmdWin)
 		}
 
-		cmd := exec.Command(asCmdWin, "-a32", "-mbig", "-mregnames", "-mgekko", "-o", outputFilePath, compileFilePath)
+		// Set base args
+		args := []string{"-a32", "-mbig", "-mregnames", "-mgekko"}
+
+		// If defsym is defined, add it to the args
+		if argConfig.DefSym != "" {
+			args = append(args, "-defsym", argConfig.DefSym)
+		}
+
+		// Add paths to look at when resolving includes
+		args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
+
+		// Set output file
+		args = append(args, "-o", outputFilePath, compileFilePath)
+
+		// Execute asembler command
+		cmd := exec.Command(asCmdWin, args...)
+
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
@@ -616,43 +653,6 @@ func buildTempAsmFile(sourceFilePath, targetFilePath string) {
 	asmContents, err := ioutil.ReadFile(sourceFilePath)
 	if err != nil {
 		log.Panicf("Failed to read asm file: %s\n%s\n", sourceFilePath, err.Error())
-	}
-
-	includeString := ".include "
-	targetFileDirectory := filepath.Dir(targetFilePath)
-
-	// If global settings say includes should be relative from the file, we need
-	// to post-process all the .include statements and convert their paths
-	if globalSettings.AreIncludesRelativeFromFile {
-		lines := bytes.Split(asmContents, []byte{'\n'})
-		for idx, line := range lines {
-			trimmedLine := strings.TrimSpace(string(line))
-			isLineTooShort := len(trimmedLine) < len(includeString)
-			if isLineTooShort {
-				continue
-			}
-
-			isIncludeStatement := trimmedLine[:len(includeString)] == includeString
-			if !isIncludeStatement {
-				continue
-			}
-
-			// Here we have an include statement, so let's get the include path
-			includePath := strings.Trim(trimmedLine[len(includeString)+1:], " \t\"")
-			if filepath.IsAbs(includePath) {
-				// Don't change anything for an absolute path
-				continue
-			}
-
-			// Combine relative include path with the path of the file
-			includePath = filepath.Join(targetFileDirectory, includePath)
-			includePath = filepath.ToSlash(includePath) // No backslashes
-
-			// Store back newly generated absolute path
-			lines[idx] = []byte(includeString + "\"" + includePath + "\"")
-		}
-
-		asmContents = bytes.Join(lines, []byte{'\n'})
 	}
 
 	// Explicitly add a new line at the end of the file, which should prevent line skip
