@@ -624,7 +624,22 @@ func compile(file string) []byte {
 			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
 		}
 
-		cmd := exec.Command(asCmdLinux, "-a32", "-mbig", "-mregnames", "-o", outputFilePath, compileFilePath)
+		// Set base args
+		args := []string{"-a32", "-mbig", "-mregnames"}
+
+		// If defsym is defined, add it to the args
+		if argConfig.DefSym != "" {
+			args = append(args, "-defsym", argConfig.DefSym)
+		}
+
+		// Add paths to look at when resolving includes
+		args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
+
+		// Set output file
+		args = append(args, "-o", outputFilePath, compileFilePath)
+
+		cmd := exec.Command(asCmdLinux, args...)
+
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Failed to compile file: %s\n", file)
