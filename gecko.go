@@ -103,6 +103,11 @@ func main() {
 			"codes.json",
 			"Used to specify a path to a config file.",
 		)
+		outputFilePtr := buildFlags.String(
+			"o",
+			"",
+			"Additional output file path. Using a .gct extension will output a gct. Everything else will output text. Will be appended to the files in the config file.",
+		)
 		defsymPtr := buildFlags.String(
 			"defsym",
 			"",
@@ -111,7 +116,11 @@ func main() {
 		buildFlags.Parse(os.Args[2:])
 
 		config := readConfigFile(*configFilePathPtr)
-		if len(config.OutputFiles) < 1 {
+		outputFiles = config.OutputFiles
+		if *outputFilePtr != "" {
+			outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
+		}
+		if len(outputFiles) < 1 {
 			log.Panic("Must have at least one output file configured in the outputFiles field\n")
 		}
 
@@ -125,7 +134,6 @@ func main() {
 		argConfig.DefSym = *defsymPtr
 
 		buildBody(config)
-		outputFiles = config.OutputFiles
 	case "assemble":
 		assembleFlags := flag.NewFlagSet("assemble", flag.ExitOnError)
 		outputFilePtr := assembleFlags.String(
