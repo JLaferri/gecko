@@ -247,11 +247,13 @@ func generateCodeLines(desc CodeDescription) []string {
 			line = addLineAnnotation(line, geckoCode.Annotation)
 			result = append(result, line)
 		case Inject:
-			lines := generateCompiledCodeLines(geckoCode.Address, "C2", geckoCode.SourceFile)
+			addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
+			lines := generateCompiledCodeLines(addressExp, "C2", geckoCode.SourceFile)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
 		case ReplaceCodeBlock:
-			lines := generateReplaceCodeBlockLines(geckoCode.Address, geckoCode.SourceFile)
+			addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
+			lines := generateReplaceCodeBlockLines(addressExp, geckoCode.SourceFile)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
 		case ReplaceBinary:
@@ -450,7 +452,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 			if lineLength < 8 {
 				indicateParseError()
 			}
-			result.Address = line[lineLength-8:]
+			result.Address = fmt.Sprintf("0x%s", line[lineLength-8:])
 		}
 
 		sections := strings.SplitN(line, " ", 3)
@@ -463,7 +465,13 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 
 		switch key {
 		case "Address:":
-			result.Address = strings.Replace(value, "0x", "", 1)
+			// Special case: handle address without 0x
+			_, err = hex.DecodeString(value)
+			if err == nil && len(value) == 8 {
+				value = fmt.Sprintf("0x%s", value)
+			}
+
+			result.Address = value
 		case "Codetype:":
 			result.Codetype = value
 		case "Annotation:":
@@ -471,15 +479,12 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 		}
 	}
 
-	// Error if Address is empty or is not length 8
-	if result.Address == "" || len(result.Address) != 8 {
-		indicateParseError()
-	}
+	// Note that address here can be any string. It will get added to a .set to evaluate injection
+	// address
 
-	// Error is Address cannot be parsed as hex
-	_, err = hex.DecodeString(result.Address)
-	if err != nil {
-		indicateParseError(err.Error())
+	// Error if Address is empty or is not length 8
+	if result.Address == "" {
+		indicateParseError()
 	}
 
 	// Check to make sure codetype is valid
@@ -491,8 +496,8 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 	return result
 }
 
-func generateCompiledCodeLines(address, codetype, file string) []string {
-	instructions := compile(file)
+func generateCompiledCodeLines(addressExp, codetype, file string) []string {
+	instructions, address := compile(file, addressExp)
 	instructionLen := len(instructions)
 
 	if instructionLen == 0 {
@@ -548,8 +553,8 @@ func getInjectLinesFromInstructions(address string, instructions []byte) []strin
 	return lines
 }
 
-func generateReplaceCodeBlockLines(address, file string) []string {
-	instructions := compile(file)
+func generateReplaceCodeBlockLines(addressExp, file string) []string {
+	instructions, address := compile(file, addressExp)
 	return getReplaceLinesFromInstructions(address, instructions)
 }
 
@@ -629,7 +634,7 @@ func generateBinaryLines(file string) []string {
 	return lines
 }
 
-func compile(file string) []byte {
+func compile(file, addressExp string) ([]byte, string) {
 	fileExt := filepath.Ext(file)
 	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
 	compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
@@ -642,7 +647,7 @@ func compile(file string) []byte {
 	// Technically this shouldn't be necessary but for some reason if the last line
 	// or the asm file has one of more spaces at the end and no new line, the last
 	// instruction is ignored and not compiled
-	buildTempAsmFile(file, compileFilePath)
+	buildTempAsmFile(file, addressExp, compileFilePath)
 
 	fileDir := filepath.Dir(file)
 
@@ -681,9 +686,16 @@ func compile(file string) []byte {
 			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
 		}
 
-		// I don't understand how this works (?)
+		// This gets the index right before the value of the last .set
+		addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
+		address := contents[addressEndIndex-4 : addressEndIndex]
+		if address[0] != 0x80 {
+			log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
+		}
+
+		// This fetches the index of the non-code region and uses it to extract just the code section
 		codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
-		return contents[52:codeEndIndex]
+		return contents[52:codeEndIndex], fmt.Sprintf("%x", address)
 	}
 
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
@@ -720,6 +732,20 @@ func compile(file string) []byte {
 			fmt.Printf("%s", output)
 			panic("as failure")
 		}
+
+		contents, err := ioutil.ReadFile(outputFilePath)
+		if err != nil {
+			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
+		}
+
+		// TODO: Confirm this works on linux/mac
+		// This gets the index right before the value of the last .set
+		addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
+		address := contents[addressEndIndex-4 : addressEndIndex]
+		if address[0] != 0x80 {
+			log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
+		}
+
 		cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -727,22 +753,29 @@ func compile(file string) []byte {
 			fmt.Printf("%s", output)
 			panic("objcopy failure")
 		}
-		contents, err := ioutil.ReadFile(outputFilePath)
+		contents, err = ioutil.ReadFile(outputFilePath)
 		if err != nil {
 			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
 		}
-		return contents
+		return contents, fmt.Sprintf("%x", address)
 	}
 
 	log.Panicf("Platform unsupported\n")
-	return nil
+	return nil, ""
 }
 
-func buildTempAsmFile(sourceFilePath, targetFilePath string) {
+func buildTempAsmFile(sourceFilePath, addressExp, targetFilePath string) {
 	asmContents, err := ioutil.ReadFile(sourceFilePath)
 	if err != nil {
 		log.Panicf("Failed to read asm file: %s\n%s\n", sourceFilePath, err.Error())
 	}
+
+	// Add new line before .set for address
+	asmContents = append(asmContents, []byte("\r\n")...)
+
+	// Add .set to get file injection address
+	setLine := fmt.Sprintf(".set GTI_FILE_INJECTION_ADDRESS, %s", addressExp)
+	asmContents = append(asmContents, []byte(setLine)...)
 
 	// Explicitly add a new line at the end of the file, which should prevent line skip
 	asmContents = append(asmContents, []byte("\r\n")...)
