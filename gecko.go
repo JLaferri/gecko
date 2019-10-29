@@ -381,8 +381,12 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 
 			// Compile file and add lines
 			fileLines := generateCompiledCodeLines(header.Address, header.Codetype, filePath)
-			forwardSlashPath := filepath.ToSlash(filePath)
-			fileLines[0] = addLineAnnotation(fileLines[0], forwardSlashPath)
+			lineAnnotation := filepath.ToSlash(filePath)
+			if header.Annotation != "" {
+				lineAnnotation = fmt.Sprintf(" %s | %s", header.Annotation, lineAnnotation)
+			}
+
+			fileLines[0] = addLineAnnotation(fileLines[0], lineAnnotation)
 			resultsChan <- compileResult{Order: orderNum, Lines: fileLines}
 		}(filePath, processedFileCount)
 
@@ -514,7 +518,7 @@ func generateCompiledCodeLines(addressExp, codetype, file string) []string {
 	switch forcedCt {
 	case "04":
 		if instructionLen != 4 {
-			log.Panicf("File %s is a replace operation and can only contain one instruction\n", file)
+			log.Panicf("File %s is configured to be a 04 code and should contain only one instruction\n", file)
 		}
 
 		instructionStr := hex.EncodeToString(instructions[0:4])
