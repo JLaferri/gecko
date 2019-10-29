@@ -69,6 +69,12 @@ type assemblerArgConfig struct {
 	DefSym      string
 }
 
+type asmFileHeader struct {
+	Address    string
+	Codetype   string
+	Annotation string
+}
+
 var argConfig assemblerArgConfig
 
 var output []string
@@ -241,7 +247,7 @@ func generateCodeLines(desc CodeDescription) []string {
 			line = addLineAnnotation(line, geckoCode.Annotation)
 			result = append(result, line)
 		case Inject:
-			lines := generateInjectionCodeLines(geckoCode.Address, geckoCode.SourceFile)
+			lines := generateCompiledCodeLines(geckoCode.Address, "C2", geckoCode.SourceFile)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
 		case ReplaceCodeBlock:
@@ -361,45 +367,7 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 	processedFileCount := 0
 	resultsChan := make(chan compileResult, len(asmFilePaths))
 	for _, filePath := range asmFilePaths {
-		file, err := os.Open(filePath)
-		if err != nil {
-			log.Panicf("Failed to read file at %s\n%s\n", filePath, err.Error())
-		}
-		defer file.Close()
-
-		// Read first line from file to get address
-		scanner := bufio.NewScanner(file)
-		scanner.Scan()
-		firstLine := scanner.Text()
-
-		// Prepare injection address error
-		indicateAddressError := func(errStr ...string) {
-			errMsg := fmt.Sprintf(
-				"File at %s needs to specify the 4 byte injection address "+
-					"at the end of the first line of the file\n",
-				filePath,
-			)
-
-			if len(errStr) > 0 {
-				errMsg += errStr[0] + "\n"
-			}
-
-			log.Panic(errMsg)
-		}
-
-		// Get address
-		lineLength := len(firstLine)
-		if lineLength < 8 {
-			indicateAddressError()
-		}
-		address := firstLine[lineLength-8:]
-
-		_, err = hex.DecodeString(address)
-		if err != nil {
-			indicateAddressError(err.Error())
-		}
-
-		go func(address, filePath string, orderNum int) {
+		go func(filePath string, orderNum int) {
 			defer func() {
 				if r := recover(); r != nil {
 					// Add recover to prevent stack traces
@@ -407,12 +375,14 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 				}
 			}()
 
+			header := parseAsmFileHeader(filePath)
+
 			// Compile file and add lines
-			fileLines := generateInjectionCodeLines(address, filePath)
+			fileLines := generateCompiledCodeLines(header.Address, header.Codetype, filePath)
 			forwardSlashPath := filepath.ToSlash(filePath)
 			fileLines[0] = addLineAnnotation(fileLines[0], forwardSlashPath)
 			resultsChan <- compileResult{Order: orderNum, Lines: fileLines}
-		}(address, filePath, processedFileCount)
+		}(filePath, processedFileCount)
 
 		processedFileCount++
 	}
@@ -446,10 +416,82 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 	return lines
 }
 
-func generateInjectionCodeLines(address, file string) []string {
-	// TODO: Add error if address or value is incorrect length/format
-	lines := []string{}
+func parseAsmFileHeader(filePath string) asmFileHeader {
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Panicf("Failed to read file at %s\n%s\n", filePath, err.Error())
+	}
+	defer file.Close()
 
+	// Prepare injection address error
+	indicateParseError := func(errStr ...string) {
+		errMsg := fmt.Sprintf(
+			"File at %s has an invalid header format\n",
+			filePath,
+		)
+
+		if len(errStr) > 0 {
+			errMsg += errStr[0] + "\n"
+		}
+
+		log.Panic(errMsg)
+	}
+
+	result := asmFileHeader{"", "Auto", ""}
+
+	// Read header lines from file
+	scanner := bufio.NewScanner(file)
+	for i := 0; i < 5; i++ {
+		scanner.Scan()
+		line := strings.TrimSpace(scanner.Text())
+		if i == 0 {
+			// For the first line, attempt to support the old header style
+			lineLength := len(line)
+			if lineLength < 8 {
+				indicateParseError()
+			}
+			result.Address = line[lineLength-8:]
+		}
+
+		sections := strings.SplitN(line, " ", 3)
+		if len(sections) < 3 || sections[0] != "#" {
+			continue
+		}
+
+		key := sections[1]
+		value := sections[2]
+
+		switch key {
+		case "Address:":
+			result.Address = strings.Replace(value, "0x", "", 1)
+		case "Codetype:":
+			result.Codetype = value
+		case "Annotation:":
+			result.Annotation = value
+		}
+	}
+
+	// Error if Address is empty or is not length 8
+	if result.Address == "" || len(result.Address) != 8 {
+		indicateParseError()
+	}
+
+	// Error is Address cannot be parsed as hex
+	_, err = hex.DecodeString(result.Address)
+	if err != nil {
+		indicateParseError(err.Error())
+	}
+
+	// Check to make sure codetype is valid
+	ct := result.Codetype
+	if ct != "Auto" && ct != "C2" && ct != "04" && ct != "06" {
+		indicateParseError("Codetype not supported. Valid options: Auto, C2, 04, 06")
+	}
+
+	return result
+}
+
+func generateCompiledCodeLines(address, codetype, file string) []string {
 	instructions := compile(file)
 	instructionLen := len(instructions)
 
@@ -457,14 +499,36 @@ func generateInjectionCodeLines(address, file string) []string {
 		log.Panicf("Did not find any code in file: %s\n", file)
 	}
 
-	if instructionLen == 4 {
-		// If instructionLen is 4, this can be a 04 code instead of C2
+	forcedCt := codetype
+	if codetype == "Auto" && instructionLen == 4 {
+		forcedCt = "04"
+	} else if codetype == "Auto" {
+		forcedCt = "C2"
+	}
+
+	switch forcedCt {
+	case "04":
+		if instructionLen != 4 {
+			log.Panicf("File %s is a replace operation and can only contain one instruction\n", file)
+		}
+
 		instructionStr := hex.EncodeToString(instructions[0:4])
 		replaceLine := generateReplaceCodeLine(address, instructionStr)
-		lines = append(lines, replaceLine)
 
-		return lines
+		return []string{replaceLine}
+	case "06":
+		return getReplaceLinesFromInstructions(address, instructions)
+	case "C2":
+		return getInjectLinesFromInstructions(address, instructions)
+	default:
+		log.Panicf("File %s has an invalid codetype\n", file)
+		return []string{}
 	}
+}
+
+func getInjectLinesFromInstructions(address string, instructions []byte) []string {
+	lines := []string{}
+	instructionLen := len(instructions)
 
 	// Fixes code to always end with 0x00000000 and have an even number of words
 	if instructionLen%8 == 0 {
@@ -485,10 +549,12 @@ func generateInjectionCodeLines(address, file string) []string {
 }
 
 func generateReplaceCodeBlockLines(address, file string) []string {
-	// TODO: Add error if address or value is incorrect length/format
-	lines := []string{}
-
 	instructions := compile(file)
+	return getReplaceLinesFromInstructions(address, instructions)
+}
+
+func getReplaceLinesFromInstructions(address string, instructions []byte) []string {
+	lines := []string{}
 	codeBlockLen := len(instructions)
 
 	// Fixes code to have an even number of words
