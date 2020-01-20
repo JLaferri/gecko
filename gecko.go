@@ -335,7 +335,7 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 
 		contents, err := ioutil.ReadDir(folder)
 		if err != nil {
-			log.Panic("Failed to read directory.", err)
+			log.Panicf("Failed to read directory at \"%s\"\n%s\n", folder, err.Error())
 		}
 
 		newFolders := []string{}
