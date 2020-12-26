@@ -54,7 +54,7 @@ I feel like it's easiest to lead by example. The `codes.json` file is relatively
 }
 ```
 #### Real example
-For a more complex example view the [codes.json file](https://github.com/JLaferri/project-slippi/blob/master/Gecko%20Codes/codes.json) in my project and the resulting [CodeList.txt file](https://github.com/JLaferri/project-slippi/blob/master/Gecko%20Codes/CodeList.txt)
+For a more complex example view the [codes.json file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/codes.json) in my project and the resulting [CodeList.txt file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/CodeList.txt)
 #### Relative paths
 I haven't tested this but it should be possible to define relative paths for `sourceFile` and `outputFile` if you have a nested directory structure.
 #### File watchers
