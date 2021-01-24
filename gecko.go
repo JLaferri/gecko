@@ -705,13 +705,25 @@ func compile(file, addressExp string) ([]byte, string) {
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		const asCmdLinux string = "powerpc-eabi-as"
 		const objcopyCmdLinux string = "powerpc-eabi-objcopy"
-		_, err := exec.LookPath(asCmdLinux)
-		if err != nil {
-			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
-		}
-		_, err = exec.LookPath(objcopyCmdLinux)
-		if err != nil {
-			log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
+
+		// Try user's default $PATH
+		_, aserr := exec.LookPath(asCmdLinux)
+		_, objcopyerr := exec.LookPath(objcopyCmdLinux)
+		if aserr != nil || objcopyerr != nil {
+			// Add $DEVKITPPC/bin to $PATH and try again
+			if envDEVKITPPC, exists := os.LookupEnv("DEVKITPPC"); exists {
+				os.Setenv("PATH", envDEVKITPPC + "/bin" + ":" + os.Getenv("PATH"));
+				_, err := exec.LookPath(asCmdLinux)
+				if err != nil {
+						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
+				}
+				_, err = exec.LookPath(objcopyCmdLinux)
+				if err != nil {
+						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
+				}
+			} else {
+				log.Panicf("%s and %s are not available in $PATH, and $DEVKITPPC has not been set. You may need to install devkit-env", asCmdLinux, objcopyCmdLinux)
+			}
 		}
 
 		// Set base args
