@@ -1,13 +1,13 @@
 {
     "outputFiles": [
       {
-        "file": "gecko/output/codes.gct"
+        "file": "examples/output/codes.gct"
       },
       {
-        "file": "gecko/output/codes.ini"
+        "file": "examples/output/codes.ini"
       },
       {
-        "file": "gecko/output/codes.bin"
+        "file": "examples/output/codes.bin"
       }
     ],
     "codes": [
@@ -19,7 +19,7 @@
           {
             "type": "injectFolder",
             "isRecursive": true,
-            "sourceFolder": "gecko/asm",
+            "sourceFolder": "examples/asm",
             "annotation": "Rumble Off [UnclePunch]"
         }
         ]
@@ -31,7 +31,7 @@
         "build": [
           {
             "type": "binary",
-            "sourceFile": "gecko/bin/FasterMeleeSettings/4Stocks.bin",
+            "sourceFile": "examples/bin/FasterMeleeSettings/4Stocks.bin",
             "annotation": "4 Stocks [Magus]"
         }
         ]
@@ -43,7 +43,7 @@
         "build": [
           {
             "type": "binary",
-            "sourceFile": "gecko/gct/FreezeGlitchFix.gct",
+            "sourceFile": "examples/gct/FreezeGlitchFix.gct",
             "annotation": "Prevent freeze glitch [tauKhan]"
         }
         ]
@@ -55,7 +55,7 @@
         "build": [
           {
             "type": "gecko",
-            "sourceFile": "gecko/text/LocalPlayerTag.ini"
+            "sourceFile": "examples/text/LocalPlayerTag.ini"
           }
         ]
       }
