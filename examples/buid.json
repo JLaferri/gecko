@@ -1,0 +1,64 @@
+{
+    "outputFiles": [
+      {
+        "file": "examples/output/codes.gct"
+      },
+      {
+        "file": "examples/output/codes.ini"
+      },
+      {
+        "file": "examples/output/codes.bin"
+      }
+    ],
+    "codes": [
+      {
+        "name": "ASM Codes",
+        "authors": [],
+        "description": [],
+        "build": [
+          {
+            "type": "injectFolder",
+            "isRecursive": true,
+            "sourceFolder": "examples/asm",
+            "annotation": "Rumble Off [UnclePunch]"
+        }
+        ]
+      },
+      {
+        "name": "Bin Codes",
+        "authors": [],
+        "description": [],
+        "build": [
+          {
+            "type": "binary",
+            "sourceFile": "examples/bin/FasterMeleeSettings/4Stocks.bin",
+            "annotation": "4 Stocks [Magus]"
+        }
+        ]
+      },
+      {
+        "name": "GCT Codes",
+        "authors": [],
+        "description": [],
+        "build": [
+          {
+            "type": "binary",
+            "sourceFile": "examples/gct/FreezeGlitchFix.gct",
+            "annotation": "Prevent freeze glitch [tauKhan]"
+        }
+        ]
+      },
+      {
+        "name": "Text Codes",
+        "authors": [],
+        "description": [],
+        "build": [
+          {
+            "type": "gecko",
+            "sourceFile": "examples/text/LocalPlayerTag.ini"
+          }
+        ]
+      }
+    ]
+  }
+  

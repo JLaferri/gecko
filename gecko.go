@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -62,6 +63,7 @@ const (
 	InjectFolder     = "injectFolder"
 	ReplaceBinary    = "replaceBinary"
 	Binary           = "binary"
+	Gecko            = "gecko"
 )
 
 type assemblerArgConfig struct {
@@ -262,6 +264,10 @@ func generateCodeLines(desc CodeDescription) []string {
 			result = append(result, lines...)
 		case Binary:
 			lines := generateBinaryLines(geckoCode.SourceFile)
+			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+			result = append(result, lines...)
+		case Gecko:
+			lines := generateGeckoLines(geckoCode.SourceFile, geckoCode.Annotation)
 			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 			result = append(result, lines...)
 		case Branch:
@@ -638,6 +644,31 @@ func generateBinaryLines(file string) []string {
 	return lines
 }
 
+func generateGeckoLines(file string, annotation string) []string {
+
+	contents, err := ioutil.ReadFile(file)
+	if err != nil {
+		log.Panicf("Failed to read binary file %s\n%s\n", file, err.Error())
+	}
+
+	instructions := contents
+
+	if len(instructions) == 0 {
+		log.Panicf("Binary file must not be empty: %s\n", file)
+	}
+
+	lines := []string{}
+
+	if len(annotation) != 0 {
+		reg := regexp.MustCompile(`/[A-F0-9]{8} [A-F0-9]{8}/g`)
+		lines = reg.FindAllString(string(contents), -1)
+	} else {
+		lines = strings.Split(string(contents), `\n`)
+	}
+
+	return lines
+}
+
 func compile(file, addressExp string) ([]byte, string) {
 	fileExt := filepath.Ext(file)
 	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
@@ -712,14 +743,14 @@ func compile(file, addressExp string) ([]byte, string) {
 		if aserr != nil || objcopyerr != nil {
 			// Add $DEVKITPPC/bin to $PATH and try again
 			if envDEVKITPPC, exists := os.LookupEnv("DEVKITPPC"); exists {
-				os.Setenv("PATH", envDEVKITPPC + "/bin" + ":" + os.Getenv("PATH"));
+				os.Setenv("PATH", envDEVKITPPC+"/bin"+":"+os.Getenv("PATH"))
 				_, err := exec.LookPath(asCmdLinux)
 				if err != nil {
-						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
+					log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
 				}
 				_, err = exec.LookPath(objcopyCmdLinux)
 				if err != nil {
-						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
+					log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
 				}
 			} else {
 				log.Panicf("%s and %s are not available in $PATH, and $DEVKITPPC has not been set. You may need to install devkit-env", asCmdLinux, objcopyCmdLinux)
