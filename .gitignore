@@ -5,6 +5,7 @@
 
 $ IDE stuff
 .idea/
+.vscode
 
 # Test binary, build with `go test -c`
 *.test

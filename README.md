@@ -55,6 +55,13 @@ I feel like it's easiest to lead by example. The `codes.json` file is relatively
 ```
 #### Real example
 For a more complex example view the [codes.json file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/codes.json) in my project and the resulting [CodeList.txt file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/CodeList.txt)
+
+#### Even more examples
+Look at `build.json` on `./examples` directory, you can execute them from the root of the project by running this on the console:
+```
+.\gecko build -c .\gecko\buid.json
+``` 
+
 #### Relative paths
 I haven't tested this but it should be possible to define relative paths for `sourceFile` and `outputFile` if you have a nested directory structure.
 #### File watchers
