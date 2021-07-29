@@ -24,6 +24,8 @@ Drawing inspiration from package managers such as npm, I thought it would be a g
 3. Add `~/gecko/bin` (or whatever path you placed the files in) to your PATH environment variable.
 4. Done!
 ## Usage
+### Important
+This section is quite outdated at this point and needs an update. If someone wants to submit a PR to update it that would be appreciated. We very rarely use anything other than `"type": "injectFolder"` now. This option allows an entire folder of code files to be converted to gecko codes according to their headers. The headers support `Address`, `Codetype`, and `Annotation` as options.
 ### build command
 All you have to do to use the build command is write a `codes.json` file and put it in a directory which contains all of your files containing your assembly code, cd to that file from the command line, and type `gecko build`. This will create a text file with all of your compiled composite codes where you specified.
 #### codes.json
@@ -62,7 +64,7 @@ I feel like it's easiest to lead by example. The `codes.json` file is relatively
 }
 ```
 #### Real example
-For a more complex example view the [codes.json file](https://github.com/JLaferri/project-slippi/blob/master/Gecko%20Codes/codes.json) in my project and the resulting [CodeList.txt file](https://github.com/JLaferri/project-slippi/blob/master/Gecko%20Codes/CodeList.txt)
+For a more complex example view the [codes.json file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/codes.json) in my project and the resulting [CodeList.txt file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/CodeList.txt)
 #### Relative paths
 I haven't tested this but it should be possible to define relative paths for `sourceFile` and `outputFile` if you have a nested directory structure.
 #### File watchers
