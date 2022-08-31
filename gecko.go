@@ -67,6 +67,7 @@ type asmFileHeader struct {
 	Address    string
 	Codetype   string
 	Annotation string
+	Tags       string
 }
 
 var argConfig assemblerArgConfig
@@ -172,6 +173,25 @@ func main() {
 
 		outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
+	case "list":
+		listFlags := flag.NewFlagSet("list", flag.ExitOnError)
+		inputPtr := listFlags.String(
+			"i",
+			"codes.json",
+			"Input to use for generating the list. Can be a json file as used with build or a path as used with assemble.",
+		)
+		outputFilePtr := listFlags.String(
+			"o",
+			"injection-list.json",
+			"Output file name where the list will be saved.",
+		)
+		isRecursivePtr := listFlags.Bool(
+			"r",
+			true,
+			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
+		)
+		listFlags.Parse(os.Args[2:])
+		listInjections(*inputPtr, *outputFilePtr, *isRecursivePtr)
 	case "-h":
 		// Print help information
 		fmt.Println("Usage: gecko <command> [flags]")
@@ -179,6 +199,7 @@ func main() {
 		fmt.Println("Supported commands:")
 		fmt.Println("\tbuild - Uses a configuration file to build codes. Recommended for larger projects.")
 		fmt.Println("\tassemble - Assembles asm files in a given directory.")
+		fmt.Println("\tlist - Outputs a list of all the injections ")
 		fmt.Println()
 		fmt.Println("Use gecko <command> -h for information about the flags for the different commands")
 		os.Exit(1)
@@ -348,7 +369,7 @@ func addLineAnnotation(line, annotation string) string {
 	return fmt.Sprintf("%s #%s", line, annotation)
 }
 
-func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string {
+func collectFilesFromFolder(rootFolder string, isRecursive bool) []string {
 	asmFilePaths := []string{}
 
 	// First collect all of the asm files we need to process
@@ -389,6 +410,12 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 		// Add new folders to front to do depth-first ordering
 		folders = append(newFolders, folders...)
 	}
+
+	return asmFilePaths
+}
+
+func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string {
+	asmFilePaths := collectFilesFromFolder(rootFolder, isRecursive)
 
 	resultsChan := make(chan lineAggregateResult, len(asmFilePaths))
 	for idx, filePath := range asmFilePaths {
@@ -438,7 +465,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 		log.Panic(errMsg + "\n")
 	}
 
-	result := asmFileHeader{"", "Auto", ""}
+	result := asmFileHeader{"", "Auto", "", ""}
 
 	// Read header lines from file
 	scanner := bufio.NewScanner(file)
@@ -475,6 +502,8 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 			result.Codetype = value
 		case "Annotation:":
 			result.Annotation = value
+		case "Tags:":
+			result.Tags = value
 		}
 	}
 
