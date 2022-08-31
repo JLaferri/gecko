@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -53,14 +52,10 @@ type lineAggregateResult struct {
 }
 
 const (
-	Replace          = "replace"
-	Inject           = "inject"
-	ReplaceCodeBlock = "replaceCodeBlock"
-	Branch           = "branch"
-	BranchAndLink    = "branchAndLink"
-	InjectFolder     = "injectFolder"
-	ReplaceBinary    = "replaceBinary"
-	Binary           = "binary"
+	Inject        = "inject"
+	InjectFolder  = "injectFolder"
+	ReplaceBinary = "replaceBinary"
+	Binary        = "binary"
 )
 
 type assemblerArgConfig struct {
@@ -72,7 +67,6 @@ type asmFileHeader struct {
 	Address    string
 	Codetype   string
 	Annotation string
-	Playback   string
 }
 
 var argConfig assemblerArgConfig
@@ -180,10 +174,12 @@ func main() {
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
 	case "-h":
 		// Print help information
-		fmt.Print("Usage: gecko <command> [flags]\n\n")
+		fmt.Println("Usage: gecko <command> [flags]")
+		fmt.Println()
 		fmt.Println("Supported commands:")
 		fmt.Println("\tbuild - Uses a configuration file to build codes. Recommended for larger projects.")
-		fmt.Print("\tassemble - Assembles asm files in a given directory.\n\n")
+		fmt.Println("\tassemble - Assembles asm files in a given directory.")
+		fmt.Println()
 		fmt.Println("Use gecko <command> -h for information about the flags for the different commands")
 		os.Exit(1)
 	default:
@@ -299,19 +295,26 @@ func generateCodeLines(desc CodeDescription) []string {
 			}()
 
 			switch geckoCode.Type {
-			case Replace:
-				line := generateReplaceCodeLine(geckoCode.Address, geckoCode.Value)
-				line = addLineAnnotation(line, geckoCode.Annotation)
-				resultsChan <- lineAggregateResult{Order: orderNum, Lines: []string{line}}
 			case Inject:
-				addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
-				lines := generateCompiledCodeLines(addressExp, "C2", geckoCode.SourceFile)
-				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
-			case ReplaceCodeBlock:
-				addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
-				lines := generateReplaceCodeBlockLines(addressExp, geckoCode.SourceFile)
-				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+				header := parseAsmFileHeader(geckoCode.SourceFile)
+				codetype := header.Codetype
+				address := header.Address
+				if codetype == "" {
+					codetype = geckoCode.Type
+				}
+				if address == "" {
+					address = geckoCode.TargetAddress
+				}
+				// Compile file and add lines
+				lines := generateCompiledCodeLines(address, codetype, geckoCode.SourceFile)
+				lineAnnotation := filepath.ToSlash(geckoCode.SourceFile)
+				if header.Annotation != "" {
+					lineAnnotation = fmt.Sprintf("%s | %s", header.Annotation, lineAnnotation)
+				}
+				if geckoCode.Annotation != "" {
+					lineAnnotation = fmt.Sprintf("%s | %s", geckoCode.Annotation, lineAnnotation)
+				}
+				lines[0] = addLineAnnotation(lines[0], lineAnnotation)
 				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
 			case ReplaceBinary:
 				lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
@@ -321,13 +324,6 @@ func generateCodeLines(desc CodeDescription) []string {
 				lines := generateBinaryLines(geckoCode.SourceFile)
 				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
 				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
-			case Branch:
-				fallthrough
-			case BranchAndLink:
-				shouldLink := geckoCode.Type == BranchAndLink
-				line := generateBranchCodeLine(geckoCode.Address, geckoCode.TargetAddress, shouldLink)
-				line = addLineAnnotation(line, geckoCode.Annotation)
-				resultsChan <- lineAggregateResult{Order: orderNum, Lines: []string{line}}
 			case InjectFolder:
 				lines := generateInjectionFolderLines(geckoCode.SourceFolder, geckoCode.IsRecursive)
 				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
@@ -341,36 +337,7 @@ func generateCodeLines(desc CodeDescription) []string {
 }
 
 func generateReplaceCodeLine(address, value string) string {
-	// TODO: Add error if address or value is incorrect length/format
-	return fmt.Sprintf("04%s %s", strings.ToUpper(address[2:]), strings.ToUpper(value))
-}
-
-func generateBranchCodeLine(address, targetAddress string, shouldLink bool) string {
-	// TODO: Add error if address or value is incorrect length/format
-
-	addressUint, err := strconv.ParseUint(address[2:], 16, 32)
-	targetAddressUint, err := strconv.ParseUint(targetAddress[2:], 16, 32)
-	if err != nil {
-		log.Panic("Failed to parse address or target address.", err)
-	}
-
-	addressDiff := targetAddressUint - addressUint
-	prefix := "48"
-	if addressDiff < 0 {
-		prefix = "4B"
-	}
-
-	if shouldLink {
-		addressDiff += 1
-	}
-
-	// TODO: Add error if diff is going to be more than 6 characters long
-
-	// Convert diff to hex string, and then for negative values, we
-	addressDiffStr := fmt.Sprintf("%06X", addressDiff)
-	addressDiffStr = addressDiffStr[len(addressDiffStr)-6:]
-
-	return fmt.Sprintf("04%s %s%s", strings.ToUpper(address[2:]), prefix, addressDiffStr)
+	return fmt.Sprintf("%s %s", combineCodetypeAndAddress("04", address), strings.ToUpper(value))
 }
 
 func addLineAnnotation(line, annotation string) string {
@@ -439,7 +406,7 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 			fileLines := generateCompiledCodeLines(header.Address, header.Codetype, filePath)
 			lineAnnotation := filepath.ToSlash(filePath)
 			if header.Annotation != "" {
-				lineAnnotation = fmt.Sprintf(" %s | %s", header.Annotation, lineAnnotation)
+				lineAnnotation = fmt.Sprintf("%s | %s", header.Annotation, lineAnnotation)
 			}
 
 			fileLines[0] = addLineAnnotation(fileLines[0], lineAnnotation)
@@ -471,7 +438,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 		log.Panic(errMsg + "\n")
 	}
 
-	result := asmFileHeader{"", "Auto", "", "exclude"}
+	result := asmFileHeader{"", "Auto", ""}
 
 	// Read header lines from file
 	scanner := bufio.NewScanner(file)
@@ -508,8 +475,6 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 			result.Codetype = value
 		case "Annotation:":
 			result.Annotation = value
-		case "Playback:":
-			result.Playback = strings.TrimSpace(strings.ToLower(value))
 		}
 	}
 
@@ -565,6 +530,21 @@ func generateCompiledCodeLines(addressExp, codetype, file string) []string {
 	}
 }
 
+func combineCodetypeAndAddress(codetype, address string) string {
+	addressBytes, err := hex.DecodeString(address)
+	if err != nil {
+		log.Panicf("Failed to parse address from hex string: %s", address)
+	}
+
+	codetypeBytes, err := hex.DecodeString(codetype)
+	if err != nil {
+		log.Panicf("Failed to parse codetype from hex string: %s", codetype)
+	}
+
+	addressBytes[0] = (addressBytes[0] & 1) + codetypeBytes[0]
+	return strings.ToUpper(hex.EncodeToString(addressBytes))
+}
+
 func getInjectLinesFromInstructions(address string, instructions []byte) []string {
 	lines := []string{}
 	instructionLen := len(instructions)
@@ -576,7 +556,7 @@ func getInjectLinesFromInstructions(address string, instructions []byte) []strin
 		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("C2%s %08X", strings.ToUpper(address[2:]), len(instructions)/8))
+	lines = append(lines, fmt.Sprintf("%s %08X", combineCodetypeAndAddress("C2", address), len(instructions)/8))
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
@@ -585,11 +565,6 @@ func getInjectLinesFromInstructions(address string, instructions []byte) []strin
 	}
 
 	return lines
-}
-
-func generateReplaceCodeBlockLines(addressExp, file string) []string {
-	instructions, address := compile(file, addressExp)
-	return getReplaceLinesFromInstructions(address, instructions)
 }
 
 func getReplaceLinesFromInstructions(address string, instructions []byte) []string {
@@ -601,7 +576,7 @@ func getReplaceLinesFromInstructions(address string, instructions []byte) []stri
 		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), codeBlockLen))
+	lines = append(lines, fmt.Sprintf("%s %08X", combineCodetypeAndAddress("06", address), codeBlockLen))
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
@@ -629,7 +604,7 @@ func generateReplaceBinaryLines(address, file string) []string {
 		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), contentBlockLen))
+	lines = append(lines, fmt.Sprintf("%s %08X", combineCodetypeAndAddress("06", address), contentBlockLen))
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
