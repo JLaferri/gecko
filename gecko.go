@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,7 +46,7 @@ type GeckoCode struct {
 	Value         string
 }
 
-type compileResult struct {
+type lineAggregateResult struct {
 	Order   int
 	Lines   []string
 	IsError bool
@@ -73,6 +72,7 @@ type asmFileHeader struct {
 	Address    string
 	Codetype   string
 	Annotation string
+	Playback   string
 }
 
 var argConfig assemblerArgConfig
@@ -99,6 +99,9 @@ func main() {
 	}
 
 	outputFiles := []FileDetails{}
+
+	// Ensure assembler files can be found
+	confirmAssembler()
 
 	command := os.Args[1]
 	switch command {
@@ -213,15 +216,32 @@ func readConfigFile(path string) Config {
 
 func buildBody(config Config) {
 	// go through every code and print a header and the codes that make it up
-	for _, code := range config.Codes {
-		headerLines := generateHeaderLines(code)
-		output = append(output, headerLines...)
+	resultsChan := make(chan lineAggregateResult, len(config.Codes))
+	for idx, code := range config.Codes {
+		go func(code CodeDescription, orderNum int) {
+			defer func() {
+				if r := recover(); r != nil {
+					// Add recover to prevent stack traces
+					resultsChan <- lineAggregateResult{IsError: true}
+				}
+			}()
 
-		codeLines := generateCodeLines(code)
-		// TODO: Add description
-		output = append(output, codeLines...)
-		output = append(output, "")
+			lines := []string{}
+
+			headerLines := generateHeaderLines(code)
+			lines = append(lines, headerLines...)
+
+			codeLines := generateCodeLines(code)
+
+			lines = append(lines, codeLines...)
+			lines = append(lines, "")
+
+			resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+		}(code, idx)
 	}
+
+	results := processLineAggregators(resultsChan, len(config.Codes))
+	output = append(output, results...)
 }
 
 func generateHeaderLines(desc CodeDescription) []string {
@@ -237,49 +257,87 @@ func generateHeaderLines(desc CodeDescription) []string {
 	return result
 }
 
-func generateCodeLines(desc CodeDescription) []string {
-	result := []string{}
+func processLineAggregators(resultsChan chan lineAggregateResult, length int) []string {
+	// Aggregate all of the results from our channel
+	results := []lineAggregateResult{}
+	for i := 0; i < length; i++ {
+		var result = <-resultsChan
+		results = append(results, result)
+	}
 
-	for _, geckoCode := range desc.Build {
-		switch geckoCode.Type {
-		case Replace:
-			line := generateReplaceCodeLine(geckoCode.Address, geckoCode.Value)
-			line = addLineAnnotation(line, geckoCode.Annotation)
-			result = append(result, line)
-		case Inject:
-			addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
-			lines := generateCompiledCodeLines(addressExp, "C2", geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case ReplaceCodeBlock:
-			addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
-			lines := generateReplaceCodeBlockLines(addressExp, geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case ReplaceBinary:
-			lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case Binary:
-			lines := generateBinaryLines(geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case Branch:
-			fallthrough
-		case BranchAndLink:
-			shouldLink := geckoCode.Type == BranchAndLink
-			line := generateBranchCodeLine(geckoCode.Address, geckoCode.TargetAddress, shouldLink)
-			line = addLineAnnotation(line, geckoCode.Annotation)
-			result = append(result, line)
-		case InjectFolder:
-			lines := generateInjectionFolderLines(geckoCode.SourceFolder, geckoCode.IsRecursive)
-			result = append(result, lines...)
-		default:
-			log.Panicf("Unsupported build type: %s\n", geckoCode.Type)
+	// If any results returned an error, panic after all goroutines complete,
+	// this is primarily done so that all of the defer calls actually execute
+	for _, result := range results {
+		if result.IsError {
+			log.Panicf("Failed to process at least one line aggregator\n")
 		}
 	}
 
-	return result
+	// Sort the results based on their order
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Order < results[j].Order
+	})
+
+	// Add the results back to lines
+	lines := []string{}
+	for _, result := range results {
+		lines = append(lines, result.Lines...)
+	}
+
+	return lines
+}
+
+func generateCodeLines(desc CodeDescription) []string {
+	resultsChan := make(chan lineAggregateResult, len(desc.Build))
+	for idx, geckoCode := range desc.Build {
+		go func(geckoCode GeckoCode, orderNum int) {
+			defer func() {
+				if r := recover(); r != nil {
+					// Add recover to prevent stack traces
+					resultsChan <- lineAggregateResult{IsError: true}
+				}
+			}()
+
+			switch geckoCode.Type {
+			case Replace:
+				line := generateReplaceCodeLine(geckoCode.Address, geckoCode.Value)
+				line = addLineAnnotation(line, geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: []string{line}}
+			case Inject:
+				addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
+				lines := generateCompiledCodeLines(addressExp, "C2", geckoCode.SourceFile)
+				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			case ReplaceCodeBlock:
+				addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
+				lines := generateReplaceCodeBlockLines(addressExp, geckoCode.SourceFile)
+				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			case ReplaceBinary:
+				lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
+				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			case Binary:
+				lines := generateBinaryLines(geckoCode.SourceFile)
+				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			case Branch:
+				fallthrough
+			case BranchAndLink:
+				shouldLink := geckoCode.Type == BranchAndLink
+				line := generateBranchCodeLine(geckoCode.Address, geckoCode.TargetAddress, shouldLink)
+				line = addLineAnnotation(line, geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: []string{line}}
+			case InjectFolder:
+				lines := generateInjectionFolderLines(geckoCode.SourceFolder, geckoCode.IsRecursive)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			default:
+				log.Panicf("Unsupported build type: %s\n", geckoCode.Type)
+			}
+		}(geckoCode, idx)
+	}
+
+	return processLineAggregators(resultsChan, len(desc.Build))
 }
 
 func generateReplaceCodeLine(address, value string) string {
@@ -324,7 +382,6 @@ func addLineAnnotation(line, annotation string) string {
 }
 
 func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string {
-	lines := []string{}
 	asmFilePaths := []string{}
 
 	// First collect all of the asm files we need to process
@@ -366,14 +423,13 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 		folders = append(newFolders, folders...)
 	}
 
-	processedFileCount := 0
-	resultsChan := make(chan compileResult, len(asmFilePaths))
-	for _, filePath := range asmFilePaths {
+	resultsChan := make(chan lineAggregateResult, len(asmFilePaths))
+	for idx, filePath := range asmFilePaths {
 		go func(filePath string, orderNum int) {
 			defer func() {
 				if r := recover(); r != nil {
 					// Add recover to prevent stack traces
-					resultsChan <- compileResult{IsError: true}
+					resultsChan <- lineAggregateResult{IsError: true}
 				}
 			}()
 
@@ -387,39 +443,11 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 			}
 
 			fileLines[0] = addLineAnnotation(fileLines[0], lineAnnotation)
-			resultsChan <- compileResult{Order: orderNum, Lines: fileLines}
-		}(filePath, processedFileCount)
-
-		processedFileCount++
+			resultsChan <- lineAggregateResult{Order: orderNum, Lines: fileLines}
+		}(filePath, idx)
 	}
 
-	// Aggregate all of the results from our channel
-	results := []compileResult{}
-	for i := 0; i < processedFileCount; i++ {
-		var result = <-resultsChan
-		results = append(results, result)
-	}
-
-	// If any results returned an error, panic after all goroutines complete,
-	// this is primarily done so that all of the defer calls actually execute
-	// and the asmtemp files get properly cleaned up.
-	for _, result := range results {
-		if result.IsError {
-			log.Panicf("Failed to compile at least one file\n")
-		}
-	}
-
-	// Sort the results based on their order
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Order < results[j].Order
-	})
-
-	// Add the results back to lines
-	for _, result := range results {
-		lines = append(lines, result.Lines...)
-	}
-
-	return lines
+	return processLineAggregators(resultsChan, len(asmFilePaths))
 }
 
 func parseAsmFileHeader(filePath string) asmFileHeader {
@@ -432,18 +460,18 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 	// Prepare injection address error
 	indicateParseError := func(errStr ...string) {
 		errMsg := fmt.Sprintf(
-			"File at %s has an invalid header format\n",
+			"File at %s has an invalid header format.",
 			filePath,
 		)
 
 		if len(errStr) > 0 {
-			errMsg += errStr[0] + "\n"
+			errMsg += " " + errStr[0]
 		}
 
-		log.Panic(errMsg)
+		log.Panic(errMsg + "\n")
 	}
 
-	result := asmFileHeader{"", "Auto", ""}
+	result := asmFileHeader{"", "Auto", "", "exclude"}
 
 	// Read header lines from file
 	scanner := bufio.NewScanner(file)
@@ -454,7 +482,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 			// For the first line, attempt to support the old header style
 			lineLength := len(line)
 			if lineLength < 8 {
-				indicateParseError()
+				indicateParseError("First line too short.")
 			}
 			result.Address = fmt.Sprintf("0x%s", line[lineLength-8:])
 		}
@@ -480,6 +508,8 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 			result.Codetype = value
 		case "Annotation:":
 			result.Annotation = value
+		case "Playback:":
+			result.Playback = strings.TrimSpace(strings.ToLower(value))
 		}
 	}
 
@@ -488,7 +518,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 
 	// Error if Address is empty or is not length 8
 	if result.Address == "" {
-		indicateParseError()
+		indicateParseError("Address is missing")
 	}
 
 	// Check to make sure codetype is valid
@@ -638,6 +668,31 @@ func generateBinaryLines(file string) []string {
 	return lines
 }
 
+func confirmAssembler() {
+	const asCmdLinux string = "powerpc-eabi-as"
+	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
+
+	// Try user's default $PATH
+	_, aserr := exec.LookPath(asCmdLinux)
+	_, objcopyerr := exec.LookPath(objcopyCmdLinux)
+	if aserr != nil || objcopyerr != nil {
+		// Add $DEVKITPPC/bin to $PATH and try again
+		if envDEVKITPPC, exists := os.LookupEnv("DEVKITPPC"); exists {
+			os.Setenv("PATH", envDEVKITPPC+"/bin"+":"+os.Getenv("PATH"))
+			_, err := exec.LookPath(asCmdLinux)
+			if err != nil {
+				log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
+			}
+			_, err = exec.LookPath(objcopyCmdLinux)
+			if err != nil {
+				log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
+			}
+		} else {
+			log.Panicf("%s and %s are not available in $PATH, and $DEVKITPPC has not been set. You may need to install devkit-env", asCmdLinux, objcopyCmdLinux)
+		}
+	}
+}
+
 func compile(file, addressExp string) ([]byte, string) {
 	fileExt := filepath.Ext(file)
 	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
@@ -655,129 +710,56 @@ func compile(file, addressExp string) ([]byte, string) {
 
 	fileDir := filepath.Dir(file)
 
-	if runtime.GOOS == "windows" {
-		const asCmdWin = "powerpc-gekko-as.exe"
-		_, err := exec.LookPath(asCmdWin)
-		if err != nil {
-			log.Panicf("%s not available in $PATH", asCmdWin)
-		}
+	const asCmdLinux string = "powerpc-eabi-as"
+	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
 
-		// Set base args
-		args := []string{"-a32", "-mbig", "-mregnames", "-mgekko"}
+	// Set base args
+	args := []string{"-a32", "-mbig", "-mregnames"}
 
-		// If defsym is defined, add it to the args
-		if argConfig.DefSym != "" {
-			args = append(args, "-defsym", argConfig.DefSym)
-		}
-
-		// Add paths to look at when resolving includes
-		args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
-
-		// Set output file
-		args = append(args, "-o", outputFilePath, compileFilePath)
-
-		// Execute asembler command
-		cmd := exec.Command(asCmdWin, args...)
-
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("Failed to compile file: %s\n", file)
-			fmt.Printf("%s", output)
-			panic("as failure")
-		}
-		contents, err := ioutil.ReadFile(outputFilePath)
-		if err != nil {
-			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-		}
-
-		// This gets the index right before the value of the last .set
-		addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
-		address := contents[addressEndIndex-4 : addressEndIndex]
-		if address[0] != 0x80 {
-			log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
-		}
-
-		// This fetches the index of the non-code region and uses it to extract just the code section
-		codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
-		return contents[52:codeEndIndex], fmt.Sprintf("%x", address)
+	// If defsym is defined, add it to the args
+	if argConfig.DefSym != "" {
+		args = append(args, "-defsym", argConfig.DefSym)
 	}
 
-	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		const asCmdLinux string = "powerpc-eabi-as"
-		const objcopyCmdLinux string = "powerpc-eabi-objcopy"
+	// Add paths to look at when resolving includes
+	args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
 
-		// Try user's default $PATH
-		_, aserr := exec.LookPath(asCmdLinux)
-		_, objcopyerr := exec.LookPath(objcopyCmdLinux)
-		if aserr != nil || objcopyerr != nil {
-			// Add $DEVKITPPC/bin to $PATH and try again
-			if envDEVKITPPC, exists := os.LookupEnv("DEVKITPPC"); exists {
-				os.Setenv("PATH", envDEVKITPPC + "/bin" + ":" + os.Getenv("PATH"));
-				_, err := exec.LookPath(asCmdLinux)
-				if err != nil {
-						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
-				}
-				_, err = exec.LookPath(objcopyCmdLinux)
-				if err != nil {
-						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
-				}
-			} else {
-				log.Panicf("%s and %s are not available in $PATH, and $DEVKITPPC has not been set. You may need to install devkit-env", asCmdLinux, objcopyCmdLinux)
-			}
-		}
+	// Set output file
+	args = append(args, "-o", outputFilePath, compileFilePath)
 
-		// Set base args
-		args := []string{"-a32", "-mbig", "-mregnames"}
+	cmd := exec.Command(asCmdLinux, args...)
 
-		// If defsym is defined, add it to the args
-		if argConfig.DefSym != "" {
-			args = append(args, "-defsym", argConfig.DefSym)
-		}
-
-		// Add paths to look at when resolving includes
-		args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
-
-		// Set output file
-		args = append(args, "-o", outputFilePath, compileFilePath)
-
-		cmd := exec.Command(asCmdLinux, args...)
-
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("Failed to compile file: %s\n", file)
-			fmt.Printf("%s", output)
-			panic("as failure")
-		}
-
-		contents, err := ioutil.ReadFile(outputFilePath)
-		if err != nil {
-			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-		}
-
-		// TODO: Confirm this works on linux/mac
-		// This gets the index right before the value of the last .set
-		addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
-		address := contents[addressEndIndex-4 : addressEndIndex]
-		if address[0] != 0x80 {
-			log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
-		}
-
-		cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("Failed to pull out .text section: %s\n", file)
-			fmt.Printf("%s", output)
-			panic("objcopy failure")
-		}
-		contents, err = ioutil.ReadFile(outputFilePath)
-		if err != nil {
-			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-		}
-		return contents, fmt.Sprintf("%x", address)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Failed to compile file: %s\n", file)
+		fmt.Printf("%s", output)
+		panic("as failure")
 	}
 
-	log.Panicf("Platform unsupported\n")
-	return nil, ""
+	contents, err := ioutil.ReadFile(outputFilePath)
+	if err != nil {
+		log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
+	}
+
+	// This gets the index right before the value of the last .set
+	addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
+	address := contents[addressEndIndex-4 : addressEndIndex]
+	if address[0] != 0x80 {
+		log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
+	}
+
+	cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Failed to pull out .text section: %s\n", file)
+		fmt.Printf("%s", output)
+		panic("objcopy failure")
+	}
+	contents, err = ioutil.ReadFile(outputFilePath)
+	if err != nil {
+		log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
+	}
+	return contents, fmt.Sprintf("%x", address)
 }
 
 func buildTempAsmFile(sourceFilePath, addressExp, targetFilePath string) {
