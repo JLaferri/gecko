@@ -15,6 +15,7 @@ import (
 
 type injectionDetails struct {
 	InjectionAddress string
+	Name             string
 	Codetype         string
 	Annotation       string
 	Tags             string
@@ -33,7 +34,7 @@ func listInjections(input, output string, isRecursive bool) {
 	}
 
 	if loc.IsDir() {
-		populateInjectionsFromFolder(input, isRecursive, &result)
+		populateInjectionsFromFolder("N/A", input, isRecursive, &result)
 	} else {
 		populateInjectionsFromFile(input, &result)
 	}
@@ -85,6 +86,7 @@ func populateInjectionsFromFile(input string, list *injectionList) {
 				}
 
 				list.Details = append(list.Details, injectionDetails{
+					Name:             code.Name,
 					InjectionAddress: address,
 					Codetype:         codetype,
 					Annotation:       lineAnnotation,
@@ -97,14 +99,15 @@ func populateInjectionsFromFile(input string, list *injectionList) {
 				}
 
 				list.Details = append(list.Details, injectionDetails{
+					Name:             code.Name,
 					InjectionAddress: address,
 					Codetype:         "06",
 					Annotation:       geckoCode.Annotation,
 				})
 			case Binary:
-				populateInjectionsFromBinary(geckoCode.SourceFile, list)
+				populateInjectionsFromBinary(code.Name, geckoCode.SourceFile, list)
 			case InjectFolder:
-				populateInjectionsFromFolder(geckoCode.SourceFolder, geckoCode.IsRecursive, list)
+				populateInjectionsFromFolder(code.Name, geckoCode.SourceFolder, geckoCode.IsRecursive, list)
 			default:
 				log.Panicf("Unsupported build type: %s\n", geckoCode.Type)
 			}
@@ -112,7 +115,7 @@ func populateInjectionsFromFile(input string, list *injectionList) {
 	}
 }
 
-func populateInjectionsFromBinary(file string, list *injectionList) {
+func populateInjectionsFromBinary(name, file string, list *injectionList) {
 	contents, err := ioutil.ReadFile(file)
 	if err != nil {
 		log.Panicf("Failed to read binary file %s\n%s\n", file, err.Error())
@@ -136,6 +139,7 @@ func populateInjectionsFromBinary(file string, list *injectionList) {
 		address[0] = (address[0] & 1) + 0x80
 
 		list.Details = append(list.Details, injectionDetails{
+			Name:             name,
 			InjectionAddress: strings.ToUpper(hex.EncodeToString(address)),
 			Codetype:         codetype,
 		})
@@ -168,16 +172,23 @@ func populateInjectionsFromBinary(file string, list *injectionList) {
 	}
 }
 
-func populateInjectionsFromFolder(input string, isRecursive bool, list *injectionList) {
+func populateInjectionsFromFolder(name, input string, isRecursive bool, list *injectionList) {
 	asmFilePaths := collectFilesFromFolder(input, isRecursive)
 
 	for _, filePath := range asmFilePaths {
 		header := parseAsmFileHeader(filePath)
 		address := parseAddressFromFile(header.Address, filePath)
+
+		lineAnnotation := filepath.ToSlash(filePath)
+		if header.Annotation != "" {
+			lineAnnotation = fmt.Sprintf("%s | %s", header.Annotation, lineAnnotation)
+		}
+
 		list.Details = append(list.Details, injectionDetails{
+			Name:             name,
 			InjectionAddress: address,
 			Codetype:         header.Codetype,
-			Annotation:       header.Annotation,
+			Annotation:       lineAnnotation,
 			Tags:             header.Tags,
 		})
 	}
