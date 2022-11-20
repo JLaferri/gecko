@@ -76,7 +76,7 @@ var output []string
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
-	fmt.Printf("Process time was %s\n", elapsed)
+	fmt.Printf("Compiled %d files. Process time was %s\n", toCompileCount, elapsed)
 }
 
 func main() {
