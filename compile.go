@@ -47,20 +47,22 @@ func execBatchCompile(jobs []compileJob) {
 	const asCmdLinux string = "powerpc-eabi-as"
 	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
 
+	deleteFile := func(fp string) {
+		defer compileWaitGroup.Done()
+		os.Remove(fp)
+	}
+
 	outputFilePath := path.Join(argConfig.ProjectRoot, "compiled.elf")
 	compileWaitGroup.Add(1)
-	defer func() {
-		defer compileWaitGroup.Done()
-		os.Remove(outputFilePath)
-	}()
+	defer deleteFile(outputFilePath)
 
 	// Generate temp file names
 	for idx, job := range jobs {
 		file := job.inputFile
 		fileExt := filepath.Ext(file)
 		fileNoExt := file[0 : len(file)-len(fileExt)]
-		job.tempFile = fmt.Sprintf("%s-file%d.asmtemp", fileNoExt, idx)
-		job.outFile = fmt.Sprintf("%s-file%d.out", fileNoExt, idx)
+		jobs[idx].tempFile = fmt.Sprintf("%s-file%d.asmtemp", fileNoExt, idx)
+		jobs[idx].outFile = fmt.Sprintf("%s-file%d.out", fileNoExt, idx)
 	}
 
 	// Set base args
@@ -86,10 +88,7 @@ func execBatchCompile(jobs []compileJob) {
 	// Iterate through jobs, create temp files, and add them to the files to assemble
 	for idx, job := range jobs {
 		compileWaitGroup.Add(1)
-		defer func() {
-			defer compileWaitGroup.Done()
-			os.Remove(job.tempFile)
-		}()
+		defer deleteFile(job.tempFile)
 
 		buildTempAsmFile(job.inputFile, job.addressExp, job.tempFile, fmt.Sprintf("file%d", idx))
 		args = append(args, job.tempFile)
@@ -107,10 +106,7 @@ func execBatchCompile(jobs []compileJob) {
 	args = []string{outputFilePath}
 	for idx, job := range jobs {
 		compileWaitGroup.Add(1)
-		defer func() {
-			defer compileWaitGroup.Done()
-			os.Remove(job.outFile)
-		}()
+		defer deleteFile(job.outFile)
 
 		args = append(args, "--dump-section", fmt.Sprintf("file%d=%s", idx, job.outFile))
 	}
@@ -354,6 +350,6 @@ func buildTempAsmFile(sourceFilePath, addressExp, targetFilePath, section string
 	asmContents = append(asmContents, []byte("\r\n")...)
 	err = ioutil.WriteFile(targetFilePath, asmContents, 0644)
 	if err != nil {
-		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
+		log.Panicf("Failed to write temporary asm file: %s\n%s\n", targetFilePath, err.Error())
 	}
 }
