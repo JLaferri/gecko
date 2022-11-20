@@ -37,6 +37,8 @@ type compileResponse struct {
 
 type compileJob struct {
 	inputFile  string
+	tempFile   string
+	outFile    string
 	addressExp string
 	response   chan compileResponse
 }
@@ -51,6 +53,15 @@ func execBatchCompile(jobs []compileJob) {
 		defer compileWaitGroup.Done()
 		os.Remove(outputFilePath)
 	}()
+
+	// Generate temp file names
+	for idx, job := range jobs {
+		file := job.inputFile
+		fileExt := filepath.Ext(file)
+		fileNoExt := file[0 : len(file)-len(fileExt)]
+		job.tempFile = fmt.Sprintf("%s-file%d.asmtemp", fileNoExt, idx)
+		job.outFile = fmt.Sprintf("%s-file%d.out", fileNoExt, idx)
+	}
 
 	// Set base args
 	args := []string{"-a32", "-mbig", "-mregnames", "-mgekko", "-W"}
@@ -74,18 +85,14 @@ func execBatchCompile(jobs []compileJob) {
 
 	// Iterate through jobs, create temp files, and add them to the files to assemble
 	for idx, job := range jobs {
-		file := job.inputFile
-		fileExt := filepath.Ext(file)
-		compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
-
 		compileWaitGroup.Add(1)
 		defer func() {
 			defer compileWaitGroup.Done()
-			os.Remove(compileFilePath)
+			os.Remove(job.tempFile)
 		}()
 
-		buildTempAsmFile(file, job.addressExp, compileFilePath, fmt.Sprintf("file%d", idx))
-		args = append(args, compileFilePath)
+		buildTempAsmFile(job.inputFile, job.addressExp, job.tempFile, fmt.Sprintf("file%d", idx))
+		args = append(args, job.tempFile)
 	}
 
 	cmd := exec.Command(asCmdLinux, args...)
@@ -99,17 +106,13 @@ func execBatchCompile(jobs []compileJob) {
 
 	args = []string{outputFilePath}
 	for idx, job := range jobs {
-		file := job.inputFile
-		fileExt := filepath.Ext(file)
-		codeFilePath := file[0:len(file)-len(fileExt)] + ".out"
-
 		compileWaitGroup.Add(1)
 		defer func() {
 			defer compileWaitGroup.Done()
-			os.Remove(codeFilePath)
+			os.Remove(job.outFile)
 		}()
 
-		args = append(args, "--dump-section", fmt.Sprintf("file%d=%s", idx, codeFilePath))
+		args = append(args, "--dump-section", fmt.Sprintf("file%d=%s", idx, job.outFile))
 	}
 
 	cmd = exec.Command(objcopyCmdLinux, args...)
@@ -121,18 +124,19 @@ func execBatchCompile(jobs []compileJob) {
 	}
 
 	for _, job := range jobs {
-		file := job.inputFile
-		fileExt := filepath.Ext(file)
-		codeFilePath := file[0:len(file)-len(fileExt)] + ".out"
-		contents, err := ioutil.ReadFile(codeFilePath)
+		contents, err := ioutil.ReadFile(job.outFile)
 		if err != nil {
-			log.Panicf("Failed to read compiled file %s\n%s\n", codeFilePath, err.Error())
+			log.Panicf("Failed to read compiled file %s\n%s\n", job.outFile, err.Error())
 		}
 
 		code := contents[:len(contents)-4]
 		address := contents[len(contents)-4:]
 		if address[0] != 0x80 && address[0] != 0x81 {
-			log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80 or 0x81, probably an invalid address\n", file)
+			log.Panicf(
+				"Injection address in file %s evaluated to a value that does not start with 0x80 or 0x81"+
+					", probably an invalid address\n",
+				job.inputFile,
+			)
 		}
 
 		job.response <- compileResponse{code: code, address: fmt.Sprintf("%x", address)}
@@ -140,8 +144,6 @@ func execBatchCompile(jobs []compileJob) {
 }
 
 func batchCompile(file, addressExp string) ([]byte, string) {
-	// return compile(file, addressExp)
-
 	c := make(chan compileResponse)
 	jobMtx.Lock()
 	compileJobs = append(compileJobs, compileJob{
