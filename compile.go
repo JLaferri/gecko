@@ -66,7 +66,7 @@ func execBatchCompile(jobs []compileJob) {
 	}
 
 	// Set base args
-	args := []string{"-a32", "-mbig", "-mregnames", "-mgekko"}
+	args := []string{"-a32", "-mbig", "-mregnames", "-mgekko", "--fatal-warnings"}
 
 	// If defsym is defined, add it to the args
 	if argConfig.DefSym != "" {
