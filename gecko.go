@@ -98,6 +98,30 @@ func main() {
 	// Ensure assembler files can be found
 	confirmAssembler()
 
+	addDefsymFlag := func(fs *flag.FlagSet) *string {
+		return fs.String(
+			"defsym",
+			"",
+			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
+		)
+	}
+
+	addIsRecursiveFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"r",
+			true,
+			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
+		)
+	}
+
+	addBatchedFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"batched",
+			false,
+			"If true, all files will be batched and assembled together. This does have some quirks, visit github for details.",
+		)
+	}
+
 	command := os.Args[1]
 	switch command {
 	case "build":
@@ -112,12 +136,11 @@ func main() {
 			"",
 			"Additional output file path. Using a .gct extension will output a gct. Everything else will output text. Will be appended to the files in the config file.",
 		)
-		defsymPtr := buildFlags.String(
-			"defsym",
-			"",
-			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
-		)
+		defsymPtr := addDefsymFlag(buildFlags)
+		batchedPtr := addBatchedFlag(buildFlags)
 		buildFlags.Parse(os.Args[2:])
+
+		useBatching = *batchedPtr
 
 		config := readConfigFile(*configFilePathPtr)
 		outputFiles = config.OutputFiles
@@ -151,17 +174,12 @@ func main() {
 			".",
 			"The root directory to assemble. Will default to the current directory.",
 		)
-		isRecursivePtr := assembleFlags.Bool(
-			"r",
-			true,
-			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
-		)
-		defsymPtr := assembleFlags.String(
-			"defsym",
-			"",
-			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
-		)
+		isRecursivePtr := addIsRecursiveFlag(assembleFlags)
+		defsymPtr := addDefsymFlag(assembleFlags)
+		batchedPtr := addBatchedFlag(assembleFlags)
 		assembleFlags.Parse(os.Args[2:])
+
+		useBatching = *batchedPtr
 
 		configDir := filepath.Dir(*assemblePathPtr)
 		projectRootTemp, err := filepath.Abs(configDir)
@@ -190,11 +208,7 @@ func main() {
 			"injection-list.json",
 			"Output file name where the list will be saved.",
 		)
-		isRecursivePtr := listFlags.Bool(
-			"r",
-			true,
-			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
-		)
+		isRecursivePtr := addIsRecursiveFlag(listFlags)
 		listFlags.Parse(os.Args[2:])
 		listInjections(*inputPtr, *outputFilePtr, *isRecursivePtr)
 	case "-h":
@@ -546,7 +560,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 }
 
 func generateCompiledCodeLines(addressExp, codetype, file string) []string {
-	instructions, address := batchCompile(file, addressExp)
+	instructions, address := compile(file, addressExp)
 	instructionLen := len(instructions)
 
 	if instructionLen == 0 {

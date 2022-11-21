@@ -14,6 +14,7 @@ import (
 	"unicode"
 )
 
+var useBatching bool
 var compileWaitGroup sync.WaitGroup
 var toCompileCount uint32
 var compileJobs []compileJob
@@ -158,6 +159,10 @@ func batchCompile(file, addressExp string) ([]byte, string) {
 }
 
 func compile(file, addressExp string) ([]byte, string) {
+	if useBatching {
+		return batchCompile(file, addressExp)
+	}
+
 	fileExt := filepath.Ext(file)
 	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
 	compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
