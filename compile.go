@@ -226,11 +226,8 @@ func compile(file, addressExp string) ([]byte, string) {
 	return contents, fmt.Sprintf("%x", address)
 }
 
-func splitSymbols(s string) []string {
-	splitter := func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '_'
-	}
-	return strings.FieldsFunc(s, splitter)
+func isSymbolRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_'
 }
 
 func splitAny(s string, seps string) []string {
@@ -238,6 +235,39 @@ func splitAny(s string, seps string) []string {
 		return strings.ContainsRune(seps, r)
 	}
 	return strings.FieldsFunc(s, splitter)
+}
+
+func removeComments(asmContents []byte) []byte {
+	body := string(asmContents)
+
+	// Remove block comments
+	newBody := ""
+	idx := strings.Index(body, "/*")
+	for idx > -1 {
+		newBody += body[:idx]
+		body = body[idx:]
+		end := strings.Index(body, "*/")
+		if end > -1 {
+			body = body[end+2:]
+		}
+		idx = strings.Index(body, "/*")
+	}
+	newBody += body
+
+	// Remove line comments
+	lines := strings.Split(newBody, "\n")
+	newLines := []string{}
+	for _, line := range lines {
+		// Remove any comments
+		commentSplit := strings.Split(line, "#")
+		if len(commentSplit) == 0 {
+			newLines = append(newLines, line)
+			continue
+		}
+		newLines = append(newLines, strings.TrimSpace(commentSplit[0]))
+	}
+
+	return []byte(strings.Join(newLines, "\n"))
 }
 
 func isolateLabelNames(asmContents []byte) []byte {
@@ -250,21 +280,13 @@ func isolateLabelNames(asmContents []byte) []byte {
 	newLines := []string{}
 	labelIdx := 100 // Start at 100 because hopefully no macros will use labels that high
 	for lineNum, line := range lines {
-		// Remove any comments
-		commentSplit := strings.Split(line, "#")
-		if len(commentSplit) == 0 {
+		isLabel := len(line) > 0 && line[len(line)-1] == ':'
+		if !isLabel {
 			newLines = append(newLines, line)
 			continue
 		}
 
-		trimmed := strings.TrimSpace(commentSplit[0])
-		isLabel := len(trimmed) > 0 && trimmed[len(trimmed)-1] == ':'
-		if !isLabel {
-			newLines = append(newLines, trimmed)
-			continue
-		}
-
-		name := trimmed[:len(trimmed)-1]
+		name := line[:len(line)-1]
 		labels[name] = labelInfo{name, labelIdx, lineNum}
 		newLines = append(newLines, fmt.Sprintf("%d:", labelIdx))
 		labelIdx += 1
@@ -301,29 +323,84 @@ func isolateLabelNames(asmContents []byte) []byte {
 		finalLines = append(finalLines, strings.Join(parts, " "))
 	}
 
-	return []byte(strings.Join(finalLines, "\r\n"))
+	return []byte(strings.Join(finalLines, "\n"))
 }
 
-// func isolateSymbolNames(asmContents []byte, section string) []byte {
-// 	lines := strings.Split(string(asmContents), "\n")
-// 	symbolMap := map[string][]symbolInfo{}
-// 	newLines := []string{}
-// 	for idx, line := range lines {
-// 		parts := splitAny(line, " \t,")
-// 		if len(parts) == 0 {
-// 			newLines = append(newLines, line)
-// 			continue
-// 		}
+func isolateSymbolNames(asmContents []byte, section string) []byte {
+	lines := strings.Split(string(asmContents), "\n")
+	symbolMap := map[string][]symbolInfo{}
+	newLines := []string{}
+	for idx, line := range lines {
+		parts := splitAny(line, " \t,")
+		if len(parts) == 0 {
+			newLines = append(newLines, line)
+			continue
+		}
 
-// 		isSet := parts[0] == ".set" && len(parts) >= 3
-// 		if !isSet {
-// 			newLines = append(newLines, line)
-// 			continue
-// 		}
+		isSet := parts[0] == ".set" && len(parts) >= 3
+		if !isSet {
+			newLines = append(newLines, line)
+			continue
+		}
 
-// 		symbolMap[parts[1]] = fmt.Sprintf("__%s_symbol_%d", section, idx)
-// 	}
-// }
+		newSymbol := fmt.Sprintf("__%s_symbol_%d", section, idx)
+
+		// Add this symbol to map
+		_, exists := symbolMap[parts[1]]
+		if !exists {
+			symbolMap[parts[1]] = []symbolInfo{}
+		}
+		symbolMap[parts[1]] = append(symbolMap[parts[1]], symbolInfo{newSymbol, idx})
+
+		newLines = append(newLines, strings.Replace(line, parts[1], newSymbol, 1))
+	}
+
+	finalLines := []string{}
+	for lineIdx, line := range newLines {
+		if len(line) == 0 {
+			finalLines = append(finalLines, line)
+			continue
+		}
+
+		symbolParts := strings.FieldsFunc(line, func(r rune) bool { return !isSymbolRune(r) })
+		connectingParts := strings.FieldsFunc(line, isSymbolRune)
+
+		for symbolIdx, symbol := range symbolParts {
+			instances, exists := symbolMap[symbol]
+			if !exists {
+				continue
+			}
+
+			remap := instances[0].name
+			for _, instance := range instances {
+				if instance.linePos > lineIdx {
+					break
+				}
+				remap = instance.name
+			}
+
+			symbolParts[symbolIdx] = remap
+		}
+
+		reconnected := []string{}
+		first, second := symbolParts, connectingParts
+		shouldSwap := !isSymbolRune(rune(line[0]))
+		if shouldSwap {
+			first, second = connectingParts, symbolParts
+		}
+
+		for partIdx, part1 := range first {
+			reconnected = append(reconnected, part1)
+			if partIdx < len(second) {
+				reconnected = append(reconnected, second[partIdx])
+			}
+		}
+
+		finalLines = append(finalLines, strings.Join(reconnected, ""))
+	}
+
+	return []byte(strings.Join(finalLines, "\n"))
+}
 
 func buildTempAsmFile(sourceFilePath, addressExp, targetFilePath, section string) {
 	asmContents, err := ioutil.ReadFile(sourceFilePath)
@@ -334,20 +411,22 @@ func buildTempAsmFile(sourceFilePath, addressExp, targetFilePath, section string
 	// If section provided, we need to take some precautions to isolate the code from others
 	if section != "" {
 		// Add the section label at the top so the code can be extracted individually
-		asmContents = append([]byte(fmt.Sprintf(".section %s\r\n", section)), asmContents...)
+		asmContents = append([]byte(fmt.Sprintf(".section %s\n", section)), asmContents...)
+
+		asmContents = removeComments(asmContents)
 		asmContents = isolateLabelNames(asmContents)
-		// asmContents = isolateSymbolNames(asmContents, section)
+		asmContents = isolateSymbolNames(asmContents, section)
 	}
 
 	// Add new line before .set for address
-	asmContents = append(asmContents, []byte("\r\n")...)
+	asmContents = append(asmContents, []byte("\n")...)
 
 	// Add .set to get file injection address
-	setLine := fmt.Sprintf(".long %s\r\n", addressExp)
+	setLine := fmt.Sprintf(".long %s\n", addressExp)
 	asmContents = append(asmContents, []byte(setLine)...)
 
 	// Explicitly add a new line at the end of the file, which should prevent line skip
-	asmContents = append(asmContents, []byte("\r\n")...)
+	asmContents = append(asmContents, []byte("\n")...)
 	err = ioutil.WriteFile(targetFilePath, asmContents, 0644)
 	if err != nil {
 		log.Panicf("Failed to write temporary asm file: %s\n%s\n", targetFilePath, err.Error())
