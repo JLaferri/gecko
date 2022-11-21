@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -14,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -76,7 +76,7 @@ var output []string
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
-	fmt.Printf("Process time was %s\n", elapsed)
+	fmt.Printf("Compiled %d files. Process time was %s\n", toCompileCount, elapsed)
 }
 
 func main() {
@@ -98,6 +98,30 @@ func main() {
 	// Ensure assembler files can be found
 	confirmAssembler()
 
+	addDefsymFlag := func(fs *flag.FlagSet) *string {
+		return fs.String(
+			"defsym",
+			"",
+			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
+		)
+	}
+
+	addIsRecursiveFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"r",
+			true,
+			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
+		)
+	}
+
+	addBatchedFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"batched",
+			false,
+			"If true, all files will be batched and assembled together. This does have some quirks, visit github for details.",
+		)
+	}
+
 	command := os.Args[1]
 	switch command {
 	case "build":
@@ -112,12 +136,11 @@ func main() {
 			"",
 			"Additional output file path. Using a .gct extension will output a gct. Everything else will output text. Will be appended to the files in the config file.",
 		)
-		defsymPtr := buildFlags.String(
-			"defsym",
-			"",
-			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
-		)
+		defsymPtr := addDefsymFlag(buildFlags)
+		batchedPtr := addBatchedFlag(buildFlags)
 		buildFlags.Parse(os.Args[2:])
+
+		useBatching = *batchedPtr
 
 		config := readConfigFile(*configFilePathPtr)
 		outputFiles = config.OutputFiles
@@ -137,6 +160,7 @@ func main() {
 		argConfig.ProjectRoot = projectRootTemp
 		argConfig.DefSym = *defsymPtr
 
+		countFilesToCompile(config)
 		buildBody(config)
 	case "assemble":
 		assembleFlags := flag.NewFlagSet("assemble", flag.ExitOnError)
@@ -150,17 +174,12 @@ func main() {
 			".",
 			"The root directory to assemble. Will default to the current directory.",
 		)
-		isRecursivePtr := assembleFlags.Bool(
-			"r",
-			true,
-			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
-		)
-		defsymPtr := assembleFlags.String(
-			"defsym",
-			"",
-			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
-		)
+		isRecursivePtr := addIsRecursiveFlag(assembleFlags)
+		defsymPtr := addDefsymFlag(assembleFlags)
+		batchedPtr := addBatchedFlag(assembleFlags)
 		assembleFlags.Parse(os.Args[2:])
+
+		useBatching = *batchedPtr
 
 		configDir := filepath.Dir(*assemblePathPtr)
 		projectRootTemp, err := filepath.Abs(configDir)
@@ -170,6 +189,10 @@ func main() {
 
 		argConfig.ProjectRoot = projectRootTemp
 		argConfig.DefSym = *defsymPtr
+
+		// Calculate the number of files that will be compiled
+		asmFilePaths := collectFilesFromFolder(*assemblePathPtr, *isRecursivePtr)
+		atomic.AddUint32(&toCompileCount, uint32(len(asmFilePaths)))
 
 		outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
@@ -185,11 +208,7 @@ func main() {
 			"injection-list.json",
 			"Output file name where the list will be saved.",
 		)
-		isRecursivePtr := listFlags.Bool(
-			"r",
-			true,
-			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
-		)
+		isRecursivePtr := addIsRecursiveFlag(listFlags)
 		listFlags.Parse(os.Args[2:])
 		listInjections(*inputPtr, *outputFilePtr, *isRecursivePtr)
 	case "-h":
@@ -211,6 +230,8 @@ func main() {
 	for _, file := range outputFiles {
 		writeOutput(file)
 	}
+
+	compileWaitGroup.Wait()
 }
 
 func readConfigFile(path string) Config {
@@ -229,6 +250,20 @@ func readConfigFile(path string) Config {
 	}
 
 	return result
+}
+
+func countFilesToCompile(config Config) {
+	for _, desc := range config.Codes {
+		for _, geckoCode := range desc.Build {
+			switch geckoCode.Type {
+			case Inject:
+				atomic.AddUint32(&toCompileCount, 1)
+			case InjectFolder:
+				asmFilePaths := collectFilesFromFolder(geckoCode.SourceFolder, geckoCode.IsRecursive)
+				atomic.AddUint32(&toCompileCount, uint32(len(asmFilePaths)))
+			}
+		}
+	}
 }
 
 func buildBody(config Config) {
@@ -694,96 +729,6 @@ func confirmAssembler() {
 		} else {
 			log.Panicf("%s and %s are not available in $PATH, and $DEVKITPPC has not been set. You may need to install devkit-env", asCmdLinux, objcopyCmdLinux)
 		}
-	}
-}
-
-func compile(file, addressExp string) ([]byte, string) {
-	fileExt := filepath.Ext(file)
-	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
-	compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
-
-	// Clean up files
-	defer os.Remove(outputFilePath)
-	defer os.Remove(compileFilePath)
-
-	// First we are gonna load all the data from file and write it into temp file
-	// Technically this shouldn't be necessary but for some reason if the last line
-	// or the asm file has one of more spaces at the end and no new line, the last
-	// instruction is ignored and not compiled
-	buildTempAsmFile(file, addressExp, compileFilePath)
-
-	fileDir := filepath.Dir(file)
-
-	const asCmdLinux string = "powerpc-eabi-as"
-	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
-
-	// Set base args
-	args := []string{"-a32", "-mbig", "-mregnames"}
-
-	// If defsym is defined, add it to the args
-	if argConfig.DefSym != "" {
-		args = append(args, "-defsym", argConfig.DefSym)
-	}
-
-	// Add paths to look at when resolving includes
-	args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
-
-	// Set output file
-	args = append(args, "-o", outputFilePath, compileFilePath)
-
-	cmd := exec.Command(asCmdLinux, args...)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Printf("Failed to compile file: %s\n", file)
-		fmt.Printf("%s", output)
-		panic("as failure")
-	}
-
-	contents, err := ioutil.ReadFile(outputFilePath)
-	if err != nil {
-		log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-	}
-
-	// This gets the index right before the value of the last .set
-	addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
-	address := contents[addressEndIndex-4 : addressEndIndex]
-	if address[0] != 0x80 {
-		log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
-	}
-
-	cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		fmt.Printf("Failed to pull out .text section: %s\n", file)
-		fmt.Printf("%s", output)
-		panic("objcopy failure")
-	}
-	contents, err = ioutil.ReadFile(outputFilePath)
-	if err != nil {
-		log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-	}
-	return contents, fmt.Sprintf("%x", address)
-}
-
-func buildTempAsmFile(sourceFilePath, addressExp, targetFilePath string) {
-	asmContents, err := ioutil.ReadFile(sourceFilePath)
-	if err != nil {
-		log.Panicf("Failed to read asm file: %s\n%s\n", sourceFilePath, err.Error())
-	}
-
-	// Add new line before .set for address
-	asmContents = append(asmContents, []byte("\r\n")...)
-
-	// Add .set to get file injection address
-	setLine := fmt.Sprintf(".set GTI_FILE_INJECTION_ADDRESS, %s", addressExp)
-	asmContents = append(asmContents, []byte(setLine)...)
-
-	// Explicitly add a new line at the end of the file, which should prevent line skip
-	asmContents = append(asmContents, []byte("\r\n")...)
-	err = ioutil.WriteFile(targetFilePath, asmContents, 0644)
-	if err != nil {
-		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
 	}
 }
 
