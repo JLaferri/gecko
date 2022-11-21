@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -205,18 +204,6 @@ func compile(file, addressExp string) ([]byte, string) {
 		panic("as failure")
 	}
 
-	contents, err := ioutil.ReadFile(outputFilePath)
-	if err != nil {
-		log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-	}
-
-	// This gets the index right before the value of the last .set
-	addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
-	address := contents[addressEndIndex-4 : addressEndIndex]
-	if address[0] != 0x80 {
-		log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
-	}
-
 	cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
@@ -224,11 +211,22 @@ func compile(file, addressExp string) ([]byte, string) {
 		fmt.Printf("%s", output)
 		panic("objcopy failure")
 	}
-	contents, err = ioutil.ReadFile(outputFilePath)
+	contents, err := ioutil.ReadFile(outputFilePath)
 	if err != nil {
 		log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
 	}
-	return contents, fmt.Sprintf("%x", address)
+
+	code := contents[:len(contents)-4]
+	address := contents[len(contents)-4:]
+	if address[0] != 0x80 && address[0] != 0x81 {
+		log.Panicf(
+			"Injection address in file %s evaluated to a value that does not start with 0x80 or 0x81"+
+				", probably an invalid address\n",
+			file,
+		)
+	}
+
+	return code, fmt.Sprintf("%x", address)
 }
 
 func isSymbolRune(r rune) bool {
