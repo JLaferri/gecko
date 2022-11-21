@@ -57,6 +57,18 @@ I feel like it's easiest to lead by example. The `codes.json` file is relatively
 For a more complex example view the [codes.json file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/codes.json) in my project and the resulting [CodeList.txt file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/CodeList.txt)
 #### Relative paths
 I haven't tested this but it should be possible to define relative paths for `sourceFile` and `outputFile` if you have a nested directory structure.
+### Batched builds
+Version 4.1.0 added the `-batched` flag on build and assemble. This collects and assembles all ASM files together which can save time on large codebases. It can also be less taxing on certain systems as it does not spawn hundreds of `powerpc-eabi-as` processes.
+
+Batched builds can potentially cause problems. The program attempts to isolate symbol and label names from each other but there may be bugs. Additionally, headers need to be handled a bit differently. Since many files include the same headers, in order to avoid duplicated definitions, headers should be wrapped in the following:
+```
+.ifndef HEADER_UNIQUE_NAME
+# Header contents here
+.endif
+.set HEADER_UNIQUE_NAME, 1
+```
+
+Additionally, I believe the assembler will act as if all files include all headers. So if you have symbols with the same name defined in different headers, the value used in any given file may not match the one in the file it itself included.
 #### File watchers
 If you use a code editer that supports file watchers, you could consider hooking up the command to run automatically whenever you save one of your assembly code files. This strategy would save you the trouble of having to `gecko build` manually.
 ## Other Commands
