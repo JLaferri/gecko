@@ -91,7 +91,7 @@ func execBatchCompile(jobs []compileJob) {
 		compileWaitGroup.Add(1)
 		defer deleteFile(job.tempFile)
 
-		buildTempAsmFile(job.inputFile, job.addressExp, job.tempFile, fmt.Sprintf("file%d", idx))
+		buildTempAsmFile(job.inputFile, job.addressExp, job.tempFile, fmt.Sprintf(".file%d", idx))
 		args = append(args, job.tempFile)
 	}
 
@@ -109,7 +109,7 @@ func execBatchCompile(jobs []compileJob) {
 		compileWaitGroup.Add(1)
 		defer deleteFile(job.outFile)
 
-		args = append(args, "--dump-section", fmt.Sprintf("file%d=%s", idx, job.outFile))
+		args = append(args, "--dump-section", fmt.Sprintf(".file%d=%s", idx, job.outFile))
 	}
 
 	cmd = exec.Command(objcopyCmdLinux, args...)
