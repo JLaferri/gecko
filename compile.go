@@ -14,6 +14,7 @@ import (
 )
 
 var useBatching bool
+var useWarnings bool
 var compileWaitGroup sync.WaitGroup
 var toCompileCount uint32
 var compileJobs []compileJob
@@ -66,7 +67,10 @@ func execBatchCompile(jobs []compileJob) {
 	}
 
 	// Set base args
-	args := []string{"-a32", "-mbig", "-mregnames", "-mgekko", "--fatal-warnings"}
+	args := []string{"-a32", "-mbig", "-mregnames", "-mgekko"}
+	if !useWarnings {
+		args = append(args, "--fatal-warnings")
+	}
 
 	// If defsym is defined, add it to the args
 	if argConfig.DefSym != "" {
@@ -183,6 +187,9 @@ func compile(file, addressExp string) ([]byte, string) {
 
 	// Set base args
 	args := []string{"-a32", "-mbig", "-mregnames", "-mgekko"}
+	if !useWarnings {
+		args = append(args, "--fatal-warnings")
+	}
 
 	// If defsym is defined, add it to the args
 	if argConfig.DefSym != "" {

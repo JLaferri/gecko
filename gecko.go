@@ -76,7 +76,7 @@ var output []string
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
-	fmt.Printf("Compiled %d files. Process time was %s\n", toCompileCount, elapsed)
+	fmt.Printf("Assembled %d files. Process time was %s\n", toCompileCount, elapsed)
 }
 
 func main() {
@@ -122,6 +122,14 @@ func main() {
 		)
 	}
 
+	addWarningsFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"warn",
+			false,
+			"If true, warnings will not be treated as errors",
+		)
+	}
+
 	command := os.Args[1]
 	switch command {
 	case "build":
@@ -138,9 +146,11 @@ func main() {
 		)
 		defsymPtr := addDefsymFlag(buildFlags)
 		batchedPtr := addBatchedFlag(buildFlags)
+		warnPtr := addWarningsFlag(buildFlags)
 		buildFlags.Parse(os.Args[2:])
 
 		useBatching = *batchedPtr
+		useWarnings = *warnPtr
 
 		config := readConfigFile(*configFilePathPtr)
 		outputFiles = config.OutputFiles
@@ -177,9 +187,11 @@ func main() {
 		isRecursivePtr := addIsRecursiveFlag(assembleFlags)
 		defsymPtr := addDefsymFlag(assembleFlags)
 		batchedPtr := addBatchedFlag(assembleFlags)
+		warnPtr := addWarningsFlag(assembleFlags)
 		assembleFlags.Parse(os.Args[2:])
 
 		useBatching = *batchedPtr
+		useWarnings = *warnPtr
 
 		configDir := filepath.Dir(*assemblePathPtr)
 		projectRootTemp, err := filepath.Abs(configDir)
