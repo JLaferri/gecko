@@ -6,12 +6,22 @@ Composite codes (perhaps there's a better term) is a trend I've been seeing wher
 
 Drawing inspiration from package managers such as npm, I thought it would be a good idea to just define what codes I wanted to compile and what addresses I wanted to inject at in a configuration file and just say "build". So that's what I did and currently that's the full scope of this simple project.
 ## Installation
+### Windows 
 1. Visit the [releases page](https://github.com/JLaferri/gecko/releases) to download the latest version
 2. Extract the files to a directory such as `C:\gecko\bin`. The contents include:
 	* **gecko.exe** - main program binary for running commands
 	* **powerpc-gekko-as.exe** - helper binary for compiling code
 	* **codes.json** - an example codes.json file used in my project
 3. Add `C:\gecko\bin` (or whatever path you placed the files in) to your PATH environment variable.
+4. Done!
+### MacOS / Linux
+1. Visit the [releases page](https://github.com/JLaferri/gecko/releases) to download the latest version with *unix* tools
+2. Extract the files to a directory such as `~/gecko/bin`. The contents include:
+	* **gecko** - main program binary for running commands
+	* **powerpc-eabi-as** - helper binary for compiling code
+	* **powerpc-eabi-ojbcopy** - helper binary for compiling code
+	* **codes.json** - an example codes.json file used in my project
+3. Add `~/gecko/bin` (or whatever path you placed the files in) to your PATH environment variable.
 4. Done!
 ## Usage
 ### Important
