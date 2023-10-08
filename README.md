@@ -36,12 +36,12 @@ I feel like it's easiest to lead by example. The `codes.json` file is relatively
             "name": "My Cool Codes!",
             "authors": [
                 "Fizzi",
-		"The Melee Modding Community"
+        "The Melee Modding Community"
             ],
             "description": [
                 "Here's a description of what",
-		"these codes do. You can even",
-		"split it into multiple lines!"
+                "these codes do. You can even",
+                "split it into multiple lines!"
             ],
             "build": [
                 {
