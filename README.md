@@ -15,7 +15,7 @@ Drawing inspiration from package managers such as npm, I thought it would be a g
 4. Done!
 ## Usage
 ### Important
-This section is quite outdated at this point and needs an update. If someone wants to submit a PR to update it that would be appreciated. We very rarely use anything other than `"type": "injectFolder"` now. This option allows an entire folder of code files to be converted to gecko codes according to their headers. The headers support `Address`, `Codetype`, and `Annotation` as options.
+We very rarely use anything other than `"type": "injectFolder"` now. This option allows an entire folder of code files to be converted to gecko codes according to their headers. The headers support `Address`, `Codetype`, and `Annotation` as options.
 ### build command
 All you have to do to use the build command is write a `codes.json` file and put it in a directory which contains all of your files containing your assembly code, cd to that file from the command line, and type `gecko build`. This will create a text file with all of your compiled composite codes where you specified.
 #### codes.json
@@ -23,38 +23,40 @@ I feel like it's easiest to lead by example. The `codes.json` file is relatively
 
 ```
 {
-  "outputFile": "CodeList.txt",
-  "codes": [
-    {
-      "name": "My Composite Code",
-      "authors": [
-        "Fizzi",
-        "Melee Modding Community"
-      ],
-      "description": [
-        "My super awesome code",
-        "description line 2"
-      ],
-      "build": [
+    "settings": {
+        "areIncludesRelativeFromFile": true
+    },
+    "outputFiles": [
         {
-          "type": "replace",
-          "address": "801A4000",
-          "value": "38600036",
-          "annotation": "Example replace (04) [Fizzi]"
-        },
-        {
-          "type": "inject",
-          "address": "8006B0DC",
-          "sourceFile": "InjectCode.asm",
-          "annotation": "Example inject (C2) [Fizzi]"
+            "file": "CodeList.txt"
         }
-      ]
-    }
-  ]
+    ],
+    "codes": [
+        {
+            "name": "My Cool Codes!",
+            "authors": [
+                "Fizzi",
+		"The Melee Modding Community"
+            ],
+            "description": [
+                "Here's a description of what",
+		"these codes do. You can even",
+		"split it into multiple lines!"
+            ],
+            "build": [
+                {
+                    "type": "injectFolder",
+                    "sourceFolder": "InjectionCodes",
+                    "isRecursive": true,
+                    "annotation": "My Injected Codes (C2) [Fizzi]"
+                }
+            ]
+        }
+    ]
 }
 ```
 #### Real example
-For a more complex example view the [codes.json file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/codes.json) in my project and the resulting [CodeList.txt file](https://github.com/project-slippi/project-slippi/blob/15533b366d3fad0ec3dae9e9c66794696c1f2624/Gecko%20Codes/CodeList.txt)
+For a more complex example view the [.json files](https://github.com/project-slippi/slippi-ssbm-asm/tree/master) in my project.
 #### Relative paths
 I haven't tested this but it should be possible to define relative paths for `sourceFile` and `outputFile` if you have a nested directory structure.
 ### Batched builds
