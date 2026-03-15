@@ -86,6 +86,8 @@ func main() {
 		if r == nil {
 			// Here we completed successfully, in that case, show time output
 			timeTrack(startTime)
+		} else {
+			os.Exit(1)
 		}
 	}(time.Now())
 
