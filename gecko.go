@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -12,10 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
-	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,21 +45,17 @@ type GeckoCode struct {
 	Value         string
 }
 
-type compileResult struct {
+type lineAggregateResult struct {
 	Order   int
 	Lines   []string
 	IsError bool
 }
 
 const (
-	Replace          = "replace"
-	Inject           = "inject"
-	ReplaceCodeBlock = "replaceCodeBlock"
-	Branch           = "branch"
-	BranchAndLink    = "branchAndLink"
-	InjectFolder     = "injectFolder"
-	ReplaceBinary    = "replaceBinary"
-	Binary           = "binary"
+	Inject        = "inject"
+	InjectFolder  = "injectFolder"
+	ReplaceBinary = "replaceBinary"
+	Binary        = "binary"
 )
 
 type assemblerArgConfig struct {
@@ -73,6 +67,7 @@ type asmFileHeader struct {
 	Address    string
 	Codetype   string
 	Annotation string
+	Tags       string
 }
 
 var argConfig assemblerArgConfig
@@ -81,7 +76,7 @@ var output []string
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
-	fmt.Printf("Process time was %s\n", elapsed)
+	fmt.Printf("Assembled %d files. Process time was %s\n", toCompileCount, elapsed)
 }
 
 func main() {
@@ -100,6 +95,41 @@ func main() {
 
 	outputFiles := []FileDetails{}
 
+	// Ensure assembler files can be found
+	confirmAssembler()
+
+	addDefsymFlag := func(fs *flag.FlagSet) *string {
+		return fs.String(
+			"defsym",
+			"",
+			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
+		)
+	}
+
+	addIsRecursiveFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"r",
+			true,
+			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
+		)
+	}
+
+	addBatchedFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"batched",
+			false,
+			"If true, all files will be batched and assembled together. This does have some quirks, visit github for details.",
+		)
+	}
+
+	addWarningsFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"warn",
+			false,
+			"If true, warnings will not be treated as errors",
+		)
+	}
+
 	command := os.Args[1]
 	switch command {
 	case "build":
@@ -114,12 +144,13 @@ func main() {
 			"",
 			"Additional output file path. Using a .gct extension will output a gct. Everything else will output text. Will be appended to the files in the config file.",
 		)
-		defsymPtr := buildFlags.String(
-			"defsym",
-			"",
-			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
-		)
+		defsymPtr := addDefsymFlag(buildFlags)
+		batchedPtr := addBatchedFlag(buildFlags)
+		warnPtr := addWarningsFlag(buildFlags)
 		buildFlags.Parse(os.Args[2:])
+
+		useBatching = *batchedPtr
+		useWarnings = *warnPtr
 
 		config := readConfigFile(*configFilePathPtr)
 		outputFiles = config.OutputFiles
@@ -139,6 +170,7 @@ func main() {
 		argConfig.ProjectRoot = projectRootTemp
 		argConfig.DefSym = *defsymPtr
 
+		countFilesToCompile(config)
 		buildBody(config)
 	case "assemble":
 		assembleFlags := flag.NewFlagSet("assemble", flag.ExitOnError)
@@ -152,17 +184,14 @@ func main() {
 			".",
 			"The root directory to assemble. Will default to the current directory.",
 		)
-		isRecursivePtr := assembleFlags.Bool(
-			"r",
-			true,
-			"If true, will recursively find all .asm files within the sub-directories as well as the root directory.",
-		)
-		defsymPtr := assembleFlags.String(
-			"defsym",
-			"",
-			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
-		)
+		isRecursivePtr := addIsRecursiveFlag(assembleFlags)
+		defsymPtr := addDefsymFlag(assembleFlags)
+		batchedPtr := addBatchedFlag(assembleFlags)
+		warnPtr := addWarningsFlag(assembleFlags)
 		assembleFlags.Parse(os.Args[2:])
+
+		useBatching = *batchedPtr
+		useWarnings = *warnPtr
 
 		configDir := filepath.Dir(*assemblePathPtr)
 		projectRootTemp, err := filepath.Abs(configDir)
@@ -173,14 +202,36 @@ func main() {
 		argConfig.ProjectRoot = projectRootTemp
 		argConfig.DefSym = *defsymPtr
 
+		// Calculate the number of files that will be compiled
+		asmFilePaths := collectFilesFromFolder(*assemblePathPtr, *isRecursivePtr)
+		atomic.AddUint32(&toCompileCount, uint32(len(asmFilePaths)))
+
 		outputFiles = append(outputFiles, FileDetails{File: *outputFilePtr})
 		output = generateInjectionFolderLines(*assemblePathPtr, *isRecursivePtr)
+	case "list":
+		listFlags := flag.NewFlagSet("list", flag.ExitOnError)
+		inputPtr := listFlags.String(
+			"i",
+			"codes.json",
+			"Input to use for generating the list. Can be a json file as used with build or a path as used with assemble.",
+		)
+		outputFilePtr := listFlags.String(
+			"o",
+			"injection-list.json",
+			"Output file name where the list will be saved.",
+		)
+		isRecursivePtr := addIsRecursiveFlag(listFlags)
+		listFlags.Parse(os.Args[2:])
+		listInjections(*inputPtr, *outputFilePtr, *isRecursivePtr)
 	case "-h":
 		// Print help information
-		fmt.Print("Usage: gecko <command> [flags]\n\n")
+		fmt.Println("Usage: gecko <command> [flags]")
+		fmt.Println()
 		fmt.Println("Supported commands:")
 		fmt.Println("\tbuild - Uses a configuration file to build codes. Recommended for larger projects.")
-		fmt.Print("\tassemble - Assembles asm files in a given directory.\n\n")
+		fmt.Println("\tassemble - Assembles asm files in a given directory.")
+		fmt.Println("\tlist - Outputs a list of all the injections ")
+		fmt.Println()
 		fmt.Println("Use gecko <command> -h for information about the flags for the different commands")
 		os.Exit(1)
 	default:
@@ -191,6 +242,8 @@ func main() {
 	for _, file := range outputFiles {
 		writeOutput(file)
 	}
+
+	compileWaitGroup.Wait()
 }
 
 func readConfigFile(path string) Config {
@@ -211,17 +264,48 @@ func readConfigFile(path string) Config {
 	return result
 }
 
+func countFilesToCompile(config Config) {
+	for _, desc := range config.Codes {
+		for _, geckoCode := range desc.Build {
+			switch geckoCode.Type {
+			case Inject:
+				atomic.AddUint32(&toCompileCount, 1)
+			case InjectFolder:
+				asmFilePaths := collectFilesFromFolder(geckoCode.SourceFolder, geckoCode.IsRecursive)
+				atomic.AddUint32(&toCompileCount, uint32(len(asmFilePaths)))
+			}
+		}
+	}
+}
+
 func buildBody(config Config) {
 	// go through every code and print a header and the codes that make it up
-	for _, code := range config.Codes {
-		headerLines := generateHeaderLines(code)
-		output = append(output, headerLines...)
+	resultsChan := make(chan lineAggregateResult, len(config.Codes))
+	for idx, code := range config.Codes {
+		go func(code CodeDescription, orderNum int) {
+			defer func() {
+				if r := recover(); r != nil {
+					// Add recover to prevent stack traces
+					resultsChan <- lineAggregateResult{IsError: true}
+				}
+			}()
 
-		codeLines := generateCodeLines(code)
-		// TODO: Add description
-		output = append(output, codeLines...)
-		output = append(output, "")
+			lines := []string{}
+
+			headerLines := generateHeaderLines(code)
+			lines = append(lines, headerLines...)
+
+			codeLines := generateCodeLines(code)
+
+			lines = append(lines, codeLines...)
+			lines = append(lines, "")
+
+			resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+		}(code, idx)
 	}
+
+	results := processLineAggregators(resultsChan, len(config.Codes))
+	output = append(output, results...)
 }
 
 func generateHeaderLines(desc CodeDescription) []string {
@@ -237,82 +321,91 @@ func generateHeaderLines(desc CodeDescription) []string {
 	return result
 }
 
-func generateCodeLines(desc CodeDescription) []string {
-	result := []string{}
+func processLineAggregators(resultsChan chan lineAggregateResult, length int) []string {
+	// Aggregate all of the results from our channel
+	results := []lineAggregateResult{}
+	for i := 0; i < length; i++ {
+		var result = <-resultsChan
+		results = append(results, result)
+	}
 
-	for _, geckoCode := range desc.Build {
-		switch geckoCode.Type {
-		case Replace:
-			line := generateReplaceCodeLine(geckoCode.Address, geckoCode.Value)
-			line = addLineAnnotation(line, geckoCode.Annotation)
-			result = append(result, line)
-		case Inject:
-			addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
-			lines := generateCompiledCodeLines(addressExp, "C2", geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case ReplaceCodeBlock:
-			addressExp := fmt.Sprintf("0x%s", geckoCode.Address)
-			lines := generateReplaceCodeBlockLines(addressExp, geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case ReplaceBinary:
-			lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case Binary:
-			lines := generateBinaryLines(geckoCode.SourceFile)
-			lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
-			result = append(result, lines...)
-		case Branch:
-			fallthrough
-		case BranchAndLink:
-			shouldLink := geckoCode.Type == BranchAndLink
-			line := generateBranchCodeLine(geckoCode.Address, geckoCode.TargetAddress, shouldLink)
-			line = addLineAnnotation(line, geckoCode.Annotation)
-			result = append(result, line)
-		case InjectFolder:
-			lines := generateInjectionFolderLines(geckoCode.SourceFolder, geckoCode.IsRecursive)
-			result = append(result, lines...)
-		default:
-			log.Panicf("Unsupported build type: %s\n", geckoCode.Type)
+	// If any results returned an error, panic after all goroutines complete,
+	// this is primarily done so that all of the defer calls actually execute
+	for _, result := range results {
+		if result.IsError {
+			log.Panicf("Failed to process at least one line aggregator\n")
 		}
 	}
 
-	return result
+	// Sort the results based on their order
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Order < results[j].Order
+	})
+
+	// Add the results back to lines
+	lines := []string{}
+	for _, result := range results {
+		lines = append(lines, result.Lines...)
+	}
+
+	return lines
+}
+
+func generateCodeLines(desc CodeDescription) []string {
+	resultsChan := make(chan lineAggregateResult, len(desc.Build))
+	for idx, geckoCode := range desc.Build {
+		go func(geckoCode GeckoCode, orderNum int) {
+			defer func() {
+				if r := recover(); r != nil {
+					// Add recover to prevent stack traces
+					resultsChan <- lineAggregateResult{IsError: true}
+				}
+			}()
+
+			switch geckoCode.Type {
+			case Inject:
+				header := parseAsmFileHeader(geckoCode.SourceFile)
+				codetype := header.Codetype
+				address := header.Address
+				if codetype == "" {
+					codetype = geckoCode.Type
+				}
+				if address == "" {
+					address = geckoCode.TargetAddress
+				}
+				// Compile file and add lines
+				lines := generateCompiledCodeLines(address, codetype, geckoCode.SourceFile)
+				lineAnnotation := filepath.ToSlash(geckoCode.SourceFile)
+				if header.Annotation != "" {
+					lineAnnotation = fmt.Sprintf("%s | %s", header.Annotation, lineAnnotation)
+				}
+				if geckoCode.Annotation != "" {
+					lineAnnotation = fmt.Sprintf("%s | %s", geckoCode.Annotation, lineAnnotation)
+				}
+				lines[0] = addLineAnnotation(lines[0], lineAnnotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			case ReplaceBinary:
+				lines := generateReplaceBinaryLines(geckoCode.Address, geckoCode.SourceFile)
+				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			case Binary:
+				lines := generateBinaryLines(geckoCode.SourceFile)
+				lines[0] = addLineAnnotation(lines[0], geckoCode.Annotation)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			case InjectFolder:
+				lines := generateInjectionFolderLines(geckoCode.SourceFolder, geckoCode.IsRecursive)
+				resultsChan <- lineAggregateResult{Order: orderNum, Lines: lines}
+			default:
+				log.Panicf("Unsupported build type: %s\n", geckoCode.Type)
+			}
+		}(geckoCode, idx)
+	}
+
+	return processLineAggregators(resultsChan, len(desc.Build))
 }
 
 func generateReplaceCodeLine(address, value string) string {
-	// TODO: Add error if address or value is incorrect length/format
-	return fmt.Sprintf("04%s %s", strings.ToUpper(address[2:]), strings.ToUpper(value))
-}
-
-func generateBranchCodeLine(address, targetAddress string, shouldLink bool) string {
-	// TODO: Add error if address or value is incorrect length/format
-
-	addressUint, err := strconv.ParseUint(address[2:], 16, 32)
-	targetAddressUint, err := strconv.ParseUint(targetAddress[2:], 16, 32)
-	if err != nil {
-		log.Panic("Failed to parse address or target address.", err)
-	}
-
-	addressDiff := targetAddressUint - addressUint
-	prefix := "48"
-	if addressDiff < 0 {
-		prefix = "4B"
-	}
-
-	if shouldLink {
-		addressDiff += 1
-	}
-
-	// TODO: Add error if diff is going to be more than 6 characters long
-
-	// Convert diff to hex string, and then for negative values, we
-	addressDiffStr := fmt.Sprintf("%06X", addressDiff)
-	addressDiffStr = addressDiffStr[len(addressDiffStr)-6:]
-
-	return fmt.Sprintf("04%s %s%s", strings.ToUpper(address[2:]), prefix, addressDiffStr)
+	return fmt.Sprintf("%s %s", combineCodetypeAndAddress("04", address), strings.ToUpper(value))
 }
 
 func addLineAnnotation(line, annotation string) string {
@@ -323,8 +416,7 @@ func addLineAnnotation(line, annotation string) string {
 	return fmt.Sprintf("%s #%s", line, annotation)
 }
 
-func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string {
-	lines := []string{}
+func collectFilesFromFolder(rootFolder string, isRecursive bool) []string {
 	asmFilePaths := []string{}
 
 	// First collect all of the asm files we need to process
@@ -366,14 +458,19 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 		folders = append(newFolders, folders...)
 	}
 
-	processedFileCount := 0
-	resultsChan := make(chan compileResult, len(asmFilePaths))
-	for _, filePath := range asmFilePaths {
+	return asmFilePaths
+}
+
+func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string {
+	asmFilePaths := collectFilesFromFolder(rootFolder, isRecursive)
+
+	resultsChan := make(chan lineAggregateResult, len(asmFilePaths))
+	for idx, filePath := range asmFilePaths {
 		go func(filePath string, orderNum int) {
 			defer func() {
 				if r := recover(); r != nil {
 					// Add recover to prevent stack traces
-					resultsChan <- compileResult{IsError: true}
+					resultsChan <- lineAggregateResult{IsError: true}
 				}
 			}()
 
@@ -383,43 +480,15 @@ func generateInjectionFolderLines(rootFolder string, isRecursive bool) []string 
 			fileLines := generateCompiledCodeLines(header.Address, header.Codetype, filePath)
 			lineAnnotation := filepath.ToSlash(filePath)
 			if header.Annotation != "" {
-				lineAnnotation = fmt.Sprintf(" %s | %s", header.Annotation, lineAnnotation)
+				lineAnnotation = fmt.Sprintf("%s | %s", header.Annotation, lineAnnotation)
 			}
 
 			fileLines[0] = addLineAnnotation(fileLines[0], lineAnnotation)
-			resultsChan <- compileResult{Order: orderNum, Lines: fileLines}
-		}(filePath, processedFileCount)
-
-		processedFileCount++
+			resultsChan <- lineAggregateResult{Order: orderNum, Lines: fileLines}
+		}(filePath, idx)
 	}
 
-	// Aggregate all of the results from our channel
-	results := []compileResult{}
-	for i := 0; i < processedFileCount; i++ {
-		var result = <-resultsChan
-		results = append(results, result)
-	}
-
-	// If any results returned an error, panic after all goroutines complete,
-	// this is primarily done so that all of the defer calls actually execute
-	// and the asmtemp files get properly cleaned up.
-	for _, result := range results {
-		if result.IsError {
-			log.Panicf("Failed to compile at least one file\n")
-		}
-	}
-
-	// Sort the results based on their order
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Order < results[j].Order
-	})
-
-	// Add the results back to lines
-	for _, result := range results {
-		lines = append(lines, result.Lines...)
-	}
-
-	return lines
+	return processLineAggregators(resultsChan, len(asmFilePaths))
 }
 
 func parseAsmFileHeader(filePath string) asmFileHeader {
@@ -432,18 +501,18 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 	// Prepare injection address error
 	indicateParseError := func(errStr ...string) {
 		errMsg := fmt.Sprintf(
-			"File at %s has an invalid header format\n",
+			"File at %s has an invalid header format.",
 			filePath,
 		)
 
 		if len(errStr) > 0 {
-			errMsg += errStr[0] + "\n"
+			errMsg += " " + errStr[0]
 		}
 
-		log.Panic(errMsg)
+		log.Panic(errMsg + "\n")
 	}
 
-	result := asmFileHeader{"", "Auto", ""}
+	result := asmFileHeader{"", "Auto", "", ""}
 
 	// Read header lines from file
 	scanner := bufio.NewScanner(file)
@@ -454,7 +523,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 			// For the first line, attempt to support the old header style
 			lineLength := len(line)
 			if lineLength < 8 {
-				indicateParseError()
+				indicateParseError("First line too short.")
 			}
 			result.Address = fmt.Sprintf("0x%s", line[lineLength-8:])
 		}
@@ -480,6 +549,8 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 			result.Codetype = value
 		case "Annotation:":
 			result.Annotation = value
+		case "Tags:":
+			result.Tags = value
 		}
 	}
 
@@ -488,7 +559,7 @@ func parseAsmFileHeader(filePath string) asmFileHeader {
 
 	// Error if Address is empty or is not length 8
 	if result.Address == "" {
-		indicateParseError()
+		indicateParseError("Address is missing")
 	}
 
 	// Check to make sure codetype is valid
@@ -535,6 +606,21 @@ func generateCompiledCodeLines(addressExp, codetype, file string) []string {
 	}
 }
 
+func combineCodetypeAndAddress(codetype, address string) string {
+	addressBytes, err := hex.DecodeString(address)
+	if err != nil {
+		log.Panicf("Failed to parse address from hex string: %s", address)
+	}
+
+	codetypeBytes, err := hex.DecodeString(codetype)
+	if err != nil {
+		log.Panicf("Failed to parse codetype from hex string: %s", codetype)
+	}
+
+	addressBytes[0] = (addressBytes[0] & 1) + codetypeBytes[0]
+	return strings.ToUpper(hex.EncodeToString(addressBytes))
+}
+
 func getInjectLinesFromInstructions(address string, instructions []byte) []string {
 	lines := []string{}
 	instructionLen := len(instructions)
@@ -546,7 +632,7 @@ func getInjectLinesFromInstructions(address string, instructions []byte) []strin
 		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("C2%s %08X", strings.ToUpper(address[2:]), len(instructions)/8))
+	lines = append(lines, fmt.Sprintf("%s %08X", combineCodetypeAndAddress("C2", address), len(instructions)/8))
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
@@ -555,11 +641,6 @@ func getInjectLinesFromInstructions(address string, instructions []byte) []strin
 	}
 
 	return lines
-}
-
-func generateReplaceCodeBlockLines(addressExp, file string) []string {
-	instructions, address := compile(file, addressExp)
-	return getReplaceLinesFromInstructions(address, instructions)
 }
 
 func getReplaceLinesFromInstructions(address string, instructions []byte) []string {
@@ -571,7 +652,7 @@ func getReplaceLinesFromInstructions(address string, instructions []byte) []stri
 		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), codeBlockLen))
+	lines = append(lines, fmt.Sprintf("%s %08X", combineCodetypeAndAddress("06", address), codeBlockLen))
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
@@ -599,7 +680,7 @@ func generateReplaceBinaryLines(address, file string) []string {
 		instructions = append(instructions, 0x00, 0x00, 0x00, 0x00)
 	}
 
-	lines = append(lines, fmt.Sprintf("06%s %08X", strings.ToUpper(address[2:]), contentBlockLen))
+	lines = append(lines, fmt.Sprintf("%s %08X", combineCodetypeAndAddress("06", address), contentBlockLen))
 
 	for i := 0; i < len(instructions); i += 8 {
 		left := strings.ToUpper(hex.EncodeToString(instructions[i : i+4]))
@@ -638,166 +719,28 @@ func generateBinaryLines(file string) []string {
 	return lines
 }
 
-func compile(file, addressExp string) ([]byte, string) {
-	fileExt := filepath.Ext(file)
-	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
-	compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
+func confirmAssembler() {
+	const asCmdLinux string = "powerpc-eabi-as"
+	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
 
-	// Clean up files
-	defer os.Remove(outputFilePath)
-	defer os.Remove(compileFilePath)
-
-	// First we are gonna load all the data from file and write it into temp file
-	// Technically this shouldn't be necessary but for some reason if the last line
-	// or the asm file has one of more spaces at the end and no new line, the last
-	// instruction is ignored and not compiled
-	buildTempAsmFile(file, addressExp, compileFilePath)
-
-	fileDir := filepath.Dir(file)
-
-	if runtime.GOOS == "windows" {
-		const asCmdWin = "powerpc-gekko-as.exe"
-		_, err := exec.LookPath(asCmdWin)
-		if err != nil {
-			log.Panicf("%s not available in $PATH", asCmdWin)
-		}
-
-		// Set base args
-		args := []string{"-a32", "-mbig", "-mregnames", "-mgekko"}
-
-		// If defsym is defined, add it to the args
-		if argConfig.DefSym != "" {
-			args = append(args, "-defsym", argConfig.DefSym)
-		}
-
-		// Add paths to look at when resolving includes
-		args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
-
-		// Set output file
-		args = append(args, "-o", outputFilePath, compileFilePath)
-
-		// Execute asembler command
-		cmd := exec.Command(asCmdWin, args...)
-
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("Failed to compile file: %s\n", file)
-			fmt.Printf("%s", output)
-			panic("as failure")
-		}
-		contents, err := ioutil.ReadFile(outputFilePath)
-		if err != nil {
-			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-		}
-
-		// This gets the index right before the value of the last .set
-		addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
-		address := contents[addressEndIndex-4 : addressEndIndex]
-		if address[0] != 0x80 {
-			log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
-		}
-
-		// This fetches the index of the non-code region and uses it to extract just the code section
-		codeEndIndex := bytes.Index(contents, []byte{0x00, 0x2E, 0x73, 0x79, 0x6D, 0x74, 0x61, 0x62})
-		return contents[52:codeEndIndex], fmt.Sprintf("%x", address)
-	}
-
-	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		const asCmdLinux string = "powerpc-eabi-as"
-		const objcopyCmdLinux string = "powerpc-eabi-objcopy"
-
-		// Try user's default $PATH
-		_, aserr := exec.LookPath(asCmdLinux)
-		_, objcopyerr := exec.LookPath(objcopyCmdLinux)
-		if aserr != nil || objcopyerr != nil {
-			// Add $DEVKITPPC/bin to $PATH and try again
-			if envDEVKITPPC, exists := os.LookupEnv("DEVKITPPC"); exists {
-				os.Setenv("PATH", envDEVKITPPC + "/bin" + ":" + os.Getenv("PATH"));
-				_, err := exec.LookPath(asCmdLinux)
-				if err != nil {
-						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
-				}
-				_, err = exec.LookPath(objcopyCmdLinux)
-				if err != nil {
-						log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
-				}
-			} else {
-				log.Panicf("%s and %s are not available in $PATH, and $DEVKITPPC has not been set. You may need to install devkit-env", asCmdLinux, objcopyCmdLinux)
+	// Try user's default $PATH
+	_, aserr := exec.LookPath(asCmdLinux)
+	_, objcopyerr := exec.LookPath(objcopyCmdLinux)
+	if aserr != nil || objcopyerr != nil {
+		// Add $DEVKITPPC/bin to $PATH and try again
+		if envDEVKITPPC, exists := os.LookupEnv("DEVKITPPC"); exists {
+			os.Setenv("PATH", envDEVKITPPC+"/bin"+":"+os.Getenv("PATH"))
+			_, err := exec.LookPath(asCmdLinux)
+			if err != nil {
+				log.Panicf("%s not available in $PATH. You may need to install devkitPPC", asCmdLinux)
 			}
+			_, err = exec.LookPath(objcopyCmdLinux)
+			if err != nil {
+				log.Panicf("%s not available in $PATH. You may need to install devkitPPC", objcopyCmdLinux)
+			}
+		} else {
+			log.Panicf("%s and %s are not available in $PATH, and $DEVKITPPC has not been set. You may need to install devkit-env", asCmdLinux, objcopyCmdLinux)
 		}
-
-		// Set base args
-		args := []string{"-a32", "-mbig", "-mregnames"}
-
-		// If defsym is defined, add it to the args
-		if argConfig.DefSym != "" {
-			args = append(args, "-defsym", argConfig.DefSym)
-		}
-
-		// Add paths to look at when resolving includes
-		args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
-
-		// Set output file
-		args = append(args, "-o", outputFilePath, compileFilePath)
-
-		cmd := exec.Command(asCmdLinux, args...)
-
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("Failed to compile file: %s\n", file)
-			fmt.Printf("%s", output)
-			panic("as failure")
-		}
-
-		contents, err := ioutil.ReadFile(outputFilePath)
-		if err != nil {
-			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-		}
-
-		// TODO: Confirm this works on linux/mac
-		// This gets the index right before the value of the last .set
-		addressEndIndex := bytes.LastIndex(contents, []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF1, 0x00})
-		address := contents[addressEndIndex-4 : addressEndIndex]
-		if address[0] != 0x80 {
-			log.Panicf("Injection address in file %s evaluated to a value that does not start with 0x80, probably an invalid address\n", file)
-		}
-
-		cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("Failed to pull out .text section: %s\n", file)
-			fmt.Printf("%s", output)
-			panic("objcopy failure")
-		}
-		contents, err = ioutil.ReadFile(outputFilePath)
-		if err != nil {
-			log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
-		}
-		return contents, fmt.Sprintf("%x", address)
-	}
-
-	log.Panicf("Platform unsupported\n")
-	return nil, ""
-}
-
-func buildTempAsmFile(sourceFilePath, addressExp, targetFilePath string) {
-	asmContents, err := ioutil.ReadFile(sourceFilePath)
-	if err != nil {
-		log.Panicf("Failed to read asm file: %s\n%s\n", sourceFilePath, err.Error())
-	}
-
-	// Add new line before .set for address
-	asmContents = append(asmContents, []byte("\r\n")...)
-
-	// Add .set to get file injection address
-	setLine := fmt.Sprintf(".set GTI_FILE_INJECTION_ADDRESS, %s", addressExp)
-	asmContents = append(asmContents, []byte(setLine)...)
-
-	// Explicitly add a new line at the end of the file, which should prevent line skip
-	asmContents = append(asmContents, []byte("\r\n")...)
-	err = ioutil.WriteFile(targetFilePath, asmContents, 0644)
-	if err != nil {
-		log.Panicf("Failed to write temporary asm file\n%s\n", err.Error())
 	}
 }
 
