@@ -64,6 +64,8 @@ type assemblerArgConfig struct {
 	ProjectRoot string
 	// Symbols from -defsym, each in the form NAME=VALUE
 	DefSyms []string
+	// The config file or folder being built, which identifies batched builds in the cache
+	InputPath string
 }
 
 type asmFileHeader struct {
@@ -79,6 +81,16 @@ var output []string
 
 func timeTrack(start time.Time) {
 	elapsed := time.Since(start)
+	if useCache {
+		fmt.Printf(
+			"Assembled %d files (%d from cache). Process time was %s\n",
+			toCompileCount,
+			atomic.LoadUint32(&cacheHits),
+			elapsed,
+		)
+		return
+	}
+
 	fmt.Printf("Assembled %d files. Process time was %s\n", toCompileCount, elapsed)
 }
 
@@ -133,6 +145,14 @@ func main() {
 		)
 	}
 
+	addCacheFlag := func(fs *flag.FlagSet) *bool {
+		return fs.Bool(
+			"cache",
+			false,
+			"If true, code assembled by earlier builds will be reused when nothing it was assembled from has changed. The cache is kept in .gecko/cache in the project root.",
+		)
+	}
+
 	command := os.Args[1]
 	switch command {
 	case "build":
@@ -150,10 +170,12 @@ func main() {
 		defsymPtr := addDefsymFlag(buildFlags)
 		batchedPtr := addBatchedFlag(buildFlags)
 		warnPtr := addWarningsFlag(buildFlags)
+		cachePtr := addCacheFlag(buildFlags)
 		buildFlags.Parse(os.Args[2:])
 
 		useBatching = *batchedPtr
 		useWarnings = *warnPtr
+		useCache = *cachePtr
 
 		config := readConfigFile(*configFilePathPtr)
 		outputFiles = config.OutputFiles
@@ -170,8 +192,18 @@ func main() {
 			log.Panic("Failed to convert project root dir\n", err)
 		}
 
+		inputPath, err := filepath.Abs(*configFilePathPtr)
+		if err != nil {
+			log.Panic("Failed to convert config file path\n", err)
+		}
+
 		argConfig.ProjectRoot = projectRootTemp
 		argConfig.DefSyms = parseDefsyms(*defsymPtr)
+		argConfig.InputPath = inputPath
+
+		if useCache {
+			setupCache()
+		}
 
 		countFilesToCompile(config)
 		buildBody(config)
@@ -191,10 +223,12 @@ func main() {
 		defsymPtr := addDefsymFlag(assembleFlags)
 		batchedPtr := addBatchedFlag(assembleFlags)
 		warnPtr := addWarningsFlag(assembleFlags)
+		cachePtr := addCacheFlag(assembleFlags)
 		assembleFlags.Parse(os.Args[2:])
 
 		useBatching = *batchedPtr
 		useWarnings = *warnPtr
+		useCache = *cachePtr
 
 		configDir := filepath.Dir(*assemblePathPtr)
 		projectRootTemp, err := filepath.Abs(configDir)
@@ -202,8 +236,18 @@ func main() {
 			log.Panic("Failed to convert project root dir\n", err)
 		}
 
+		inputPath, err := filepath.Abs(*assemblePathPtr)
+		if err != nil {
+			log.Panic("Failed to convert assemble path\n", err)
+		}
+
 		argConfig.ProjectRoot = projectRootTemp
 		argConfig.DefSyms = parseDefsyms(*defsymPtr)
+		argConfig.InputPath = inputPath
+
+		if useCache {
+			setupCache()
+		}
 
 		// Calculate the number of files that will be compiled
 		asmFilePaths := collectFilesFromFolder(*assemblePathPtr, *isRecursivePtr)
