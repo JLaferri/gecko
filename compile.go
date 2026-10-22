@@ -48,6 +48,31 @@ func execBatchCompile(jobs []compileJob) {
 	const asCmdLinux string = "powerpc-eabi-as"
 	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
 
+	requested := []cacheResult{}
+	for _, job := range jobs {
+		requested = append(requested, cacheResult{File: job.inputFile, AddressExp: job.addressExp})
+	}
+
+	// Files assembled together can see each other's symbols and macros so a change to any one of
+	// them can change the code of the rest. Because of that a batch is cached as a whole
+	slot := ""
+	if useCache {
+		slot = cacheSlot("batched", argConfig.InputPath)
+		results := cacheLookup(slot, requested)
+		if results != nil {
+			resultsByKey := map[string]cacheResult{}
+			for _, result := range results {
+				resultsByKey[cacheResultKey(result)] = result
+			}
+
+			for idx, job := range jobs {
+				result := resultsByKey[cacheResultKey(requested[idx])]
+				job.response <- compileResponse{code: result.Code, address: result.Address}
+			}
+			return
+		}
+	}
+
 	// Keep intermediate files in a temp directory unique to this build so they can't collide
 	// with the files of another build running at the same time
 	tempDir := makeTempDir()
@@ -59,6 +84,7 @@ func execBatchCompile(jobs []compileJob) {
 
 	outputFilePath := filepath.Join(tempDir, "compiled.elf")
 	copyFilePath := filepath.Join(tempDir, "copied.elf")
+	depFilePath := filepath.Join(tempDir, "compiled.d")
 
 	// Generate temp file names
 	for idx := range jobs {
@@ -75,13 +101,22 @@ func execBatchCompile(jobs []compileJob) {
 	// If defsym is defined, add it to the args
 	args = append(args, defsymArgs()...)
 
-	args = append(args, "-I", argConfig.ProjectRoot)
+	includeDirs := []string{argConfig.ProjectRoot}
 
 	// Add local paths to look at when resolving includes
 	for _, job := range jobs {
 		file := job.inputFile
 		fileDir := filepath.Dir(file)
-		args = append(args, "-I", fileDir)
+		includeDirs = append(includeDirs, fileDir)
+	}
+
+	for _, dir := range includeDirs {
+		args = append(args, "-I", dir)
+	}
+
+	// Have the assembler list every file it reads so the cache can tell when the code is out of date
+	if useCache {
+		args = append(args, "--MD", depFilePath)
 	}
 
 	// Set output file
@@ -142,7 +177,10 @@ func execBatchCompile(jobs []compileJob) {
 		panic("objcopy failure")
 	}
 
-	for _, job := range jobs {
+	results := []cacheResult{}
+	sources := []string{}
+	asmFiles := []string{}
+	for idx, job := range jobs {
 		contents, err := ioutil.ReadFile(job.outFile)
 		if err != nil {
 			log.Panicf("Failed to read compiled file %s\n%s\n", job.outFile, err.Error())
@@ -158,7 +196,20 @@ func execBatchCompile(jobs []compileJob) {
 			)
 		}
 
-		job.response <- compileResponse{code: code, address: fmt.Sprintf("%x", address)}
+		result := requested[idx]
+		result.Code = code
+		result.Address = fmt.Sprintf("%x", address)
+		results = append(results, result)
+		sources = append(sources, job.inputFile)
+		asmFiles = append(asmFiles, job.tempFile)
+
+		job.response <- compileResponse{code: result.Code, address: result.Address}
+	}
+
+	// The order of the include paths after the project root depends on the order the jobs came in,
+	// which varies from build to build
+	if useCache {
+		cacheStore(slot, results, sources, depFilePath, asmFiles, includeDirs, 1)
 	}
 }
 
@@ -205,6 +256,15 @@ func compile(file, addressExp string) ([]byte, string) {
 		return batchCompile(file, addressExp)
 	}
 
+	slot := ""
+	if useCache {
+		slot = cacheSlot("single", file, addressExp)
+		results := cacheLookup(slot, []cacheResult{{File: file, AddressExp: addressExp}})
+		if results != nil {
+			return results[0].Code, results[0].Address
+		}
+	}
+
 	// Keep intermediate files in a temp directory unique to this compile. They used to sit next
 	// to the source file and objcopy converted them in place, which makes it create a temp file
 	// of its own in that directory. objcopy picks the same temp names in every process, so
@@ -216,6 +276,7 @@ func compile(file, addressExp string) ([]byte, string) {
 	compileFilePath := filepath.Join(tempDir, "code.asmtemp")
 	outputFilePath := filepath.Join(tempDir, "code.elf")
 	binaryFilePath := filepath.Join(tempDir, "code.bin")
+	depFilePath := filepath.Join(tempDir, "code.d")
 
 	// First we are gonna load all the data from file and write it into temp file
 	// Technically this shouldn't be necessary but for some reason if the last line
@@ -238,7 +299,15 @@ func compile(file, addressExp string) ([]byte, string) {
 	args = append(args, defsymArgs()...)
 
 	// Add paths to look at when resolving includes
-	args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
+	includeDirs := []string{fileDir, argConfig.ProjectRoot}
+	for _, dir := range includeDirs {
+		args = append(args, "-I", dir)
+	}
+
+	// Have the assembler list every file it reads so the cache can tell when the code is out of date
+	if useCache {
+		args = append(args, "--MD", depFilePath)
+	}
 
 	// Set output file
 	args = append(args, "-o", outputFilePath, compileFilePath)
@@ -285,7 +354,12 @@ func compile(file, addressExp string) ([]byte, string) {
 		)
 	}
 
-	return code, fmt.Sprintf("%x", address)
+	result := cacheResult{File: file, AddressExp: addressExp, Code: code, Address: fmt.Sprintf("%x", address)}
+	if useCache {
+		cacheStore(slot, []cacheResult{result}, []string{file}, depFilePath, []string{compileFilePath}, includeDirs, len(includeDirs))
+	}
+
+	return result.Code, result.Address
 }
 
 func isSymbolRune(r rune) bool {
