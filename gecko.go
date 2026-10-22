@@ -149,7 +149,7 @@ func main() {
 		return fs.Bool(
 			"cache",
 			false,
-			"If true, code assembled by earlier builds will be reused when nothing it was assembled from has changed. The cache is kept in .gecko/cache in the project root.",
+			"If true, code assembled by earlier builds will be reused when nothing it was assembled from has changed. The cache is kept in .gecko/cache in the project root. Not recommended with -batched, where any change rebuilds the whole batch.",
 		)
 	}
 

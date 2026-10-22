@@ -76,7 +76,7 @@ If you use a code editer that supports file watchers, you could consider hooking
 ### Undefined symbols
 The assembler doesn't complain about symbols that aren't defined anywhere. It leaves them for a linker to fill in, and since gecko codes are never linked they would end up as zeros, so a misspelled symbol or label would quietly build into broken code. Instead the build fails and points at the lines using the symbol. The same goes for code that needs the absolute address of one of its own labels, such as `lis r3, MyLabel@ha`, which also isn't known until the code is placed in memory.
 ### Caching
-The `-cache` flag on build and assemble reuses code assembled by earlier builds. The cache is kept in `.gecko/cache` next to the config file, and gecko puts a `.gitignore` in `.gecko` so it stays out of source control. Delete the `.gecko` folder to clear it.
+The `-cache` flag on build and assemble reuses code assembled by earlier builds. The cache is kept in `.gecko/cache` next to the config file, and gecko puts a `.gitignore` in it so it stays out of source control. Delete the `.gecko/cache` folder to clear it.
 
 A file's code is only reused when nothing that could change it has changed:
 * The file's contents and injection address
@@ -85,7 +85,7 @@ A file's code is only reused when nothing that could change it has changed:
 * The `-defsym`, `-warn` and `-batched` flags. Each combination keeps its own entries so alternating between them doesn't rebuild everything
 * The gecko and assembler binaries
 
-With `-batched`, files are assembled together and can see each other's symbols, so the batch is cached as a whole and any change rebuilds all of it.
+With `-batched`, files are assembled together and can see each other's symbols, so the batch is cached as a whole and any change rebuilds all of it. Using `-cache` without `-batched` is recommended instead. Only the files that changed get assembled, which avoids most of the cost batching was meant to save.
 
 A file saved within a few seconds of a build starting is assembled as usual but not cached until a later build, in case it changed while the assembler was reading it.
 ## Other Commands

@@ -97,16 +97,16 @@ func setupCache() {
 		return
 	}
 
-	geckoDir := filepath.Join(argConfig.ProjectRoot, ".gecko")
-	cacheDir = filepath.Join(geckoDir, "cache")
+	cacheDir = filepath.Join(argConfig.ProjectRoot, ".gecko", "cache")
 	err = os.MkdirAll(cacheDir, 0755)
 	if err != nil {
 		disable(err)
 		return
 	}
 
-	// Keep the cache out of source control without needing the project to ignore it
-	gitignorePath := filepath.Join(geckoDir, ".gitignore")
+	// Keep the cache out of source control without needing the project to ignore it. Only the cache
+	// is ignored so anything else kept in .gecko can still be committed
+	gitignorePath := filepath.Join(cacheDir, ".gitignore")
 	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
 		ioutil.WriteFile(gitignorePath, []byte("*\n"), 0644)
 	}
