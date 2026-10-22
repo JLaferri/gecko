@@ -73,5 +73,7 @@ Batched builds can potentially cause problems. The program attempts to isolate s
 Additionally, I believe the assembler will act as if all files include all headers. So if you have symbols with the same name defined in different headers, the value used in any given file may not match the one in the file it itself included.
 #### File watchers
 If you use a code editer that supports file watchers, you could consider hooking up the command to run automatically whenever you save one of your assembly code files. This strategy would save you the trouble of having to `gecko build` manually.
+### Undefined symbols
+The assembler doesn't complain about symbols that aren't defined anywhere. It leaves them for a linker to fill in, and since gecko codes are never linked they would end up as zeros, so a misspelled symbol or label would quietly build into broken code. Instead the build fails and points at the lines using the symbol. The same goes for code that needs the absolute address of one of its own labels, such as `lis r3, MyLabel@ha`, which also isn't known until the code is placed in memory.
 ## Other Commands
 If anyone has any ideas as to some other commands that might be useful I'm more than open to contributions. Please just fork my project and submit a pull request. I called this project Gecko Tool(s) for a reason. Hopefully there are more useful things that can be done with it.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"debug/elf"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -72,9 +73,7 @@ func execBatchCompile(jobs []compileJob) {
 	}
 
 	// If defsym is defined, add it to the args
-	if argConfig.DefSym != "" {
-		args = append(args, "-defsym", argConfig.DefSym)
-	}
+	args = append(args, defsymArgs()...)
 
 	args = append(args, "-I", argConfig.ProjectRoot)
 
@@ -110,6 +109,22 @@ func execBatchCompile(jobs []compileJob) {
 		fmt.Printf("Failed to compile files")
 		fmt.Printf("%s", strings.NewReplacer(pathPairs...).Replace(string(output)))
 		panic("as failure")
+	}
+
+	// Only the .fileN sections are pulled out into codes
+	messages := findUnresolvedSymbols(outputFilePath, func(section *elf.Section) (string, bool) {
+		var idx int
+		_, err := fmt.Sscanf(section.Name, ".file%d", &idx)
+		if err != nil || section.Name != fmt.Sprintf(".file%d", idx) || idx >= len(jobs) {
+			return "", false
+		}
+
+		return jobs[idx].inputFile, true
+	})
+	if len(messages) > 0 {
+		fmt.Printf("Failed to compile files\n")
+		fmt.Printf("%s\n", strings.Join(messages, "\n"))
+		panic("unresolved symbols")
 	}
 
 	// Give objcopy an output file. Without one it converts in place by way of a temp file it
@@ -165,6 +180,17 @@ func batchCompile(file, addressExp string) ([]byte, string) {
 	return result.code, result.address
 }
 
+// defsymArgs returns the assembler args for the symbols given with -defsym. The assembler takes one
+// symbol per -defsym and quietly ignores anything after the first, so each gets its own
+func defsymArgs() []string {
+	args := []string{}
+	for _, def := range argConfig.DefSyms {
+		args = append(args, "-defsym", def)
+	}
+
+	return args
+}
+
 func makeTempDir() string {
 	tempDir, err := os.MkdirTemp("", "gecko-")
 	if err != nil {
@@ -209,9 +235,7 @@ func compile(file, addressExp string) ([]byte, string) {
 	}
 
 	// If defsym is defined, add it to the args
-	if argConfig.DefSym != "" {
-		args = append(args, "-defsym", argConfig.DefSym)
-	}
+	args = append(args, defsymArgs()...)
 
 	// Add paths to look at when resolving includes
 	args = append(args, "-I", fileDir, "-I", argConfig.ProjectRoot)
@@ -227,6 +251,16 @@ func compile(file, addressExp string) ([]byte, string) {
 		fmt.Printf("Failed to compile file: %s\n", file)
 		fmt.Printf("%s", strings.ReplaceAll(string(output), compileFilePath, file))
 		panic("as failure")
+	}
+
+	// Converting to binary puts every section that's loaded into memory into the code
+	messages := findUnresolvedSymbols(outputFilePath, func(section *elf.Section) (string, bool) {
+		return file, section.Flags&elf.SHF_ALLOC != 0
+	})
+	if len(messages) > 0 {
+		fmt.Printf("Failed to compile file: %s\n", file)
+		fmt.Printf("%s\n", strings.Join(messages, "\n"))
+		panic("unresolved symbols")
 	}
 
 	cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, binaryFilePath)

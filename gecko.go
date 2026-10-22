@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -60,7 +62,8 @@ const (
 
 type assemblerArgConfig struct {
 	ProjectRoot string
-	DefSym      string
+	// Symbols from -defsym, each in the form NAME=VALUE
+	DefSyms []string
 }
 
 type asmFileHeader struct {
@@ -102,7 +105,7 @@ func main() {
 		return fs.String(
 			"defsym",
 			"",
-			"Allows the defining of symbols from the command line. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
+			"Allows the defining of symbols from the command line. Separate multiple symbols with commas. Values must be whole numbers in decimal or hex. Example: \"EX_SYM1=10,EX_SYM2=0xABC\"",
 		)
 	}
 
@@ -168,7 +171,7 @@ func main() {
 		}
 
 		argConfig.ProjectRoot = projectRootTemp
-		argConfig.DefSym = *defsymPtr
+		argConfig.DefSyms = parseDefsyms(*defsymPtr)
 
 		countFilesToCompile(config)
 		buildBody(config)
@@ -200,7 +203,7 @@ func main() {
 		}
 
 		argConfig.ProjectRoot = projectRootTemp
-		argConfig.DefSym = *defsymPtr
+		argConfig.DefSyms = parseDefsyms(*defsymPtr)
 
 		// Calculate the number of files that will be compiled
 		asmFilePaths := collectFilesFromFolder(*assemblePathPtr, *isRecursivePtr)
@@ -244,6 +247,64 @@ func main() {
 	}
 
 	compileWaitGroup.Wait()
+}
+
+var defsymNamePattern = regexp.MustCompile(`^[A-Za-z_.$][A-Za-z0-9_.$]*$`)
+var defsymValuePattern = regexp.MustCompile(`^([+-]?)(0[xX][0-9A-Fa-f]+|[0-9]+)$`)
+
+// parseDefsyms splits the -defsym flag into its symbols and checks each one. The assembler only
+// understands a whole number as a value. Given anything else it quietly uses whatever number the
+// value starts with, or 0, so those values are errors instead
+func parseDefsyms(value string) []string {
+	defsyms := []string{}
+	for _, def := range strings.Split(value, ",") {
+		if strings.TrimSpace(def) == "" {
+			continue
+		}
+
+		parts := strings.SplitN(def, "=", 2)
+		if len(parts) != 2 {
+			log.Panicf("Invalid -defsym %q, symbols must be given as NAME=VALUE\n", def)
+		}
+
+		name := strings.TrimSpace(parts[0])
+		symValue := strings.TrimSpace(parts[1])
+		if !defsymNamePattern.MatchString(name) {
+			log.Panicf("Invalid -defsym %q, %q is not a valid symbol name\n", def, name)
+		}
+
+		match := defsymValuePattern.FindStringSubmatch(symValue)
+		if match == nil {
+			log.Panicf(
+				"Invalid -defsym %q, the value must be a whole number in decimal or hex (0x...)."+
+					" Expressions and other symbols can't be used\n",
+				def,
+			)
+		}
+
+		sign, digits := match[1], match[2]
+		base := 10
+		if len(digits) > 1 && (digits[1] == 'x' || digits[1] == 'X') {
+			base = 16
+			digits = digits[2:]
+		} else if len(digits) > 1 && digits[0] == '0' {
+			log.Panicf("Invalid -defsym %q, a number starting with 0 would be read as octal\n", def)
+		}
+
+		// The code is 32 bit so a value that doesn't fit in 32 bits can't be what was meant
+		maxMagnitude := uint64(0xFFFFFFFF)
+		if sign == "-" {
+			maxMagnitude = 0x80000000
+		}
+		magnitude, err := strconv.ParseUint(digits, base, 64)
+		if err != nil || magnitude > maxMagnitude {
+			log.Panicf("Invalid -defsym %q, the value doesn't fit in 32 bits\n", def)
+		}
+
+		defsyms = append(defsyms, name+"="+symValue)
+	}
+
+	return defsyms
 }
 
 func readConfigFile(path string) Config {
