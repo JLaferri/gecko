@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -48,22 +47,22 @@ func execBatchCompile(jobs []compileJob) {
 	const asCmdLinux string = "powerpc-eabi-as"
 	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
 
-	deleteFile := func(fp string) {
-		defer compileWaitGroup.Done()
-		os.Remove(fp)
-	}
-
-	outputFilePath := path.Join(argConfig.ProjectRoot, "compiled.elf")
+	// Keep intermediate files in a temp directory unique to this build so they can't collide
+	// with the files of another build running at the same time
+	tempDir := makeTempDir()
 	compileWaitGroup.Add(1)
-	defer deleteFile(outputFilePath)
+	defer func() {
+		defer compileWaitGroup.Done()
+		os.RemoveAll(tempDir)
+	}()
+
+	outputFilePath := filepath.Join(tempDir, "compiled.elf")
+	copyFilePath := filepath.Join(tempDir, "copied.elf")
 
 	// Generate temp file names
-	for idx, job := range jobs {
-		file := job.inputFile
-		fileExt := filepath.Ext(file)
-		fileNoExt := file[0 : len(file)-len(fileExt)]
-		jobs[idx].tempFile = fmt.Sprintf("%s-file%d.asmtemp", fileNoExt, idx)
-		jobs[idx].outFile = fmt.Sprintf("%s-file%d.out", fileNoExt, idx)
+	for idx := range jobs {
+		jobs[idx].tempFile = filepath.Join(tempDir, fmt.Sprintf("file%d.asmtemp", idx))
+		jobs[idx].outFile = filepath.Join(tempDir, fmt.Sprintf("file%d.out", idx))
 	}
 
 	// Set base args
@@ -91,9 +90,6 @@ func execBatchCompile(jobs []compileJob) {
 
 	// Iterate through jobs, create temp files, and add them to the files to assemble
 	for idx, job := range jobs {
-		compileWaitGroup.Add(1)
-		defer deleteFile(job.tempFile)
-
 		buildTempAsmFile(job.inputFile, job.addressExp, job.tempFile, fmt.Sprintf(".file%d", idx))
 		args = append(args, job.tempFile)
 	}
@@ -102,16 +98,24 @@ func execBatchCompile(jobs []compileJob) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// Show errors against the names the temp files used to have next to their sources so it's
+		// clear which source each error came from
+		pathPairs := []string{}
+		for idx, job := range jobs {
+			file := job.inputFile
+			fileNoExt := file[0 : len(file)-len(filepath.Ext(file))]
+			pathPairs = append(pathPairs, job.tempFile, fmt.Sprintf("%s-file%d.asmtemp", fileNoExt, idx))
+		}
+
 		fmt.Printf("Failed to compile files")
-		fmt.Printf("%s", output)
+		fmt.Printf("%s", strings.NewReplacer(pathPairs...).Replace(string(output)))
 		panic("as failure")
 	}
 
-	args = []string{outputFilePath}
+	// Give objcopy an output file. Without one it converts in place by way of a temp file it
+	// creates next to the input, which can fail (see compile)
+	args = []string{outputFilePath, copyFilePath}
 	for idx, job := range jobs {
-		compileWaitGroup.Add(1)
-		defer deleteFile(job.outFile)
-
 		args = append(args, "--dump-section", fmt.Sprintf(".file%d=%s", idx, job.outFile))
 	}
 
@@ -161,18 +165,31 @@ func batchCompile(file, addressExp string) ([]byte, string) {
 	return result.code, result.address
 }
 
+func makeTempDir() string {
+	tempDir, err := os.MkdirTemp("", "gecko-")
+	if err != nil {
+		log.Panicf("Failed to create temp directory\n%s\n", err.Error())
+	}
+
+	return tempDir
+}
+
 func compile(file, addressExp string) ([]byte, string) {
 	if useBatching {
 		return batchCompile(file, addressExp)
 	}
 
-	fileExt := filepath.Ext(file)
-	outputFilePath := file[0:len(file)-len(fileExt)] + ".out"
-	compileFilePath := file[0:len(file)-len(fileExt)] + ".asmtemp"
+	// Keep intermediate files in a temp directory unique to this compile. They used to sit next
+	// to the source file and objcopy converted them in place, which makes it create a temp file
+	// of its own in that directory. objcopy picks the same temp names in every process, so
+	// compiling files from the same folder at once would sometimes fail with "Permission denied"
+	// when one process tried to create a name another had just deleted
+	tempDir := makeTempDir()
+	defer os.RemoveAll(tempDir)
 
-	// Clean up files
-	defer os.Remove(outputFilePath)
-	defer os.Remove(compileFilePath)
+	compileFilePath := filepath.Join(tempDir, "code.asmtemp")
+	outputFilePath := filepath.Join(tempDir, "code.elf")
+	binaryFilePath := filepath.Join(tempDir, "code.bin")
 
 	// First we are gonna load all the data from file and write it into temp file
 	// Technically this shouldn't be necessary but for some reason if the last line
@@ -206,19 +223,20 @@ func compile(file, addressExp string) ([]byte, string) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// The temp file has the same lines as the source file so point errors at the source
 		fmt.Printf("Failed to compile file: %s\n", file)
-		fmt.Printf("%s", output)
+		fmt.Printf("%s", strings.ReplaceAll(string(output), compileFilePath, file))
 		panic("as failure")
 	}
 
-	cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, outputFilePath)
+	cmd = exec.Command(objcopyCmdLinux, "-O", "binary", outputFilePath, binaryFilePath)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("Failed to pull out .text section: %s\n", file)
 		fmt.Printf("%s", output)
 		panic("objcopy failure")
 	}
-	contents, err := ioutil.ReadFile(outputFilePath)
+	contents, err := ioutil.ReadFile(binaryFilePath)
 	if err != nil {
 		log.Panicf("Failed to read compiled file %s\n%s\n", file, err.Error())
 	}
