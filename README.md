@@ -9,10 +9,12 @@ Drawing inspiration from package managers such as npm, I thought it would be a g
 1. Visit the [releases page](https://github.com/JLaferri/gecko/releases) to download the latest version
 2. Extract the files to a directory such as `C:\gecko\bin`. The contents include:
 	* **gecko.exe** - main program binary for running commands
-	* **powerpc-gekko-as.exe** - helper binary for compiling code
-	* **codes.json** - an example codes.json file used in my project
+	* **powerpc-eabi-as.exe** - assembler used to compile code
+	* **powerpc-eabi-objcopy.exe** - pulls the compiled code out of the assembler's output
 3. Add `C:\gecko\bin` (or whatever path you placed the files in) to your PATH environment variable.
 4. Done!
+
+If you have devkitPPC installed, gecko will also find the assembler tools in `$DEVKITPPC/bin` when they aren't on your PATH.
 ## Usage
 ### Important
 We very rarely use anything other than `"type": "injectFolder"` now. This option allows an entire folder of code files to be converted to gecko codes according to their headers. The headers support `Address`, `Codetype`, and `Annotation` as options.
