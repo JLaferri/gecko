@@ -20,3 +20,6 @@ Test/
 
 # Built
 gecko
+
+# Release builds, see build-release.sh
+release/
