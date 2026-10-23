@@ -98,10 +98,13 @@ func main() {
 	defer func(startTime time.Time) {
 		// Recover from panic to prevent printing stack trace
 		r := recover()
-		if r == nil {
-			// Here we completed successfully, in that case, show time output
-			timeTrack(startTime)
+		if r != nil {
+			// Still let whatever ran the build know that it failed
+			os.Exit(1)
 		}
+
+		// Here we completed successfully, in that case, show time output
+		timeTrack(startTime)
 	}(time.Now())
 
 	if len(os.Args) < 2 {
@@ -435,10 +438,12 @@ func processLineAggregators(resultsChan chan lineAggregateResult, length int) []
 	}
 
 	// If any results returned an error, panic after all goroutines complete,
-	// this is primarily done so that all of the defer calls actually execute
+	// this is primarily done so that all of the defer calls actually execute.
+	// Whatever failed already printed why, and every level of nesting gets here,
+	// so this doesn't print anything itself
 	for _, result := range results {
 		if result.IsError {
-			log.Panicf("Failed to process at least one line aggregator\n")
+			panic("line aggregator failure")
 		}
 	}
 

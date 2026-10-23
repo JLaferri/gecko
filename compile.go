@@ -34,6 +34,7 @@ type labelInfo struct {
 type compileResponse struct {
 	code    []byte
 	address string
+	failed  bool
 }
 
 type compileJob struct {
@@ -47,6 +48,18 @@ type compileJob struct {
 func execBatchCompile(jobs []compileJob) {
 	const asCmdLinux string = "powerpc-eabi-as"
 	const objcopyCmdLinux string = "powerpc-eabi-objcopy"
+
+	// This runs on its own goroutine where a panic would crash the process with a stack trace.
+	// Instead every job still waiting is told the batch failed so the panic happens on the
+	// goroutine that asked for the job, which recovers from it. Jobs are answered in order
+	answered := 0
+	defer func() {
+		if r := recover(); r != nil {
+			for _, job := range jobs[answered:] {
+				job.response <- compileResponse{failed: true}
+			}
+		}
+	}()
 
 	requested := []cacheResult{}
 	for _, job := range jobs {
@@ -68,6 +81,7 @@ func execBatchCompile(jobs []compileJob) {
 			for idx, job := range jobs {
 				result := resultsByKey[cacheResultKey(requested[idx])]
 				job.response <- compileResponse{code: result.Code, address: result.Address}
+				answered++
 			}
 			return
 		}
@@ -141,7 +155,7 @@ func execBatchCompile(jobs []compileJob) {
 			pathPairs = append(pathPairs, job.tempFile, fmt.Sprintf("%s-file%d.asmtemp", fileNoExt, idx))
 		}
 
-		fmt.Printf("Failed to compile files")
+		fmt.Printf("Failed to compile files\n")
 		fmt.Printf("%s", strings.NewReplacer(pathPairs...).Replace(string(output)))
 		panic("as failure")
 	}
@@ -204,6 +218,7 @@ func execBatchCompile(jobs []compileJob) {
 		asmFiles = append(asmFiles, job.tempFile)
 
 		job.response <- compileResponse{code: result.Code, address: result.Address}
+		answered++
 	}
 
 	// The order of the include paths after the project root depends on the order the jobs came in,
@@ -228,6 +243,11 @@ func batchCompile(file, addressExp string) ([]byte, string) {
 	jobMtx.Unlock()
 
 	result := <-c
+	if result.failed {
+		// The batch already printed why it failed
+		panic("batch compile failure")
+	}
+
 	return result.code, result.address
 }
 
